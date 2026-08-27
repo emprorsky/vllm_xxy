@@ -46,6 +46,7 @@ from vllm.v1.core.sched.output import (
     ScheduledEncoderInputStats,
     SchedulerOutput,
 )
+from vllm.v1.core.sched.policy import create_decision_policy
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
     SchedulingPolicy,
@@ -193,6 +194,10 @@ class Scheduler(SchedulerInterface):
             raise ValueError(
                 f"Unknown scheduling policy: {self.scheduler_config.policy}"
             ) from e
+        # Preemption victim selection policy (default = base-commit behavior).
+        self.decision_policy = create_decision_policy(
+            self.policy, self.scheduler_config.preemption_policy
+        )
         # Priority queues for requests.
         self.waiting = create_request_queue(self.policy)
         # requests skipped in waiting flow due async deps or constraints.
@@ -664,10 +669,16 @@ class Scheduler(SchedulerInterface):
 
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
-                    if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
+                    if (
+                        self.policy == SchedulingPolicy.PRIORITY
+                        or self.scheduler_config.preemption_policy != "default"
+                    ):
+                        # Victim may sit at an arbitrary position in the
+                        # running list, so remove by index (the default FCFS
+                        # policy still selects the newest request, i.e. the
+                        # last element, matching the base-commit behavior).
+                        preempted_req = self.decision_policy.select_preemption_victim(
+                            self.running
                         )
                         # Record the index of the preemption victim to
                         # maintain accurate loop state.
