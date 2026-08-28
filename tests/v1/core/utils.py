@@ -75,7 +75,7 @@ def create_scheduler(
     kv_cache_spec: KVCacheSpec | None = None,
     per_request_spec_decode_metrics: str = "none",
     prefix_cache_eviction_policy: str = "lru",
-    kv_aware_candidate_window: int = 16,
+    kv_aware_candidate_window: int = 8,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 

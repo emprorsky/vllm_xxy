@@ -601,6 +601,32 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             counter_prefix_cache_hits, per_engine_labelvalues
         )
 
+        retention_counter_docs = {
+            "resolver_calls": "Number of waiting-demand retention resolutions.",
+            "candidates": "Number of waiting requests inspected for KV retention.",
+            "candidates_with_hits": (
+                "Number of inspected waiting requests with local prefix hits."
+            ),
+            "blocks": "Number of unique block IDs returned by retention resolvers.",
+            "avoided_evictions": (
+                "Number of retained LRU candidates skipped during allocation."
+            ),
+            "fallback_blocks": (
+                "Number of retained blocks allocated through soft fallback."
+            ),
+        }
+        self.counter_kv_retention = {
+            field: create_metric_per_engine(
+                self._counter_cls(
+                    name=f"vllm:kv_retention_{field}",
+                    documentation=documentation,
+                    labelnames=labelnames,
+                ),
+                per_engine_labelvalues,
+            )
+            for field, documentation in retention_counter_docs.items()
+        }
+
         #
         # External - KV connector prefix cache
         #
@@ -1128,6 +1154,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             self.counter_prefix_cache_hits[engine_idx].inc(
                 scheduler_stats.prefix_cache_stats.hits
             )
+            retention_stats = scheduler_stats.kv_retention_stats
+            for field, counters in self.counter_kv_retention.items():
+                counters[engine_idx].inc(getattr(retention_stats, field))
 
             if scheduler_stats.connector_prefix_cache_stats is not None:
                 self.counter_connector_prefix_cache_queries[engine_idx].inc(

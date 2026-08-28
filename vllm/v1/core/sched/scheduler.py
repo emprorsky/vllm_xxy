@@ -58,6 +58,7 @@ from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutp
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import (
+    KVRetentionStats,
     PrefixCacheStats,
     RequestSpecDecodeMetrics,
     SchedulerStats,
@@ -213,6 +214,7 @@ class Scheduler(SchedulerInterface):
 
         # IDs of requests preempted since the last call to schedule().
         self.reset_preempted_req_ids: set[str] = set()
+        self.kv_retention_stats = KVRetentionStats()
 
         # Counter for requests waiting for streaming input. Used to calculate
         # number of unfinished requests
@@ -663,6 +665,7 @@ class Scheduler(SchedulerInterface):
                         num_new_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                         retention_resolver=self._make_waiting_demand_retention_resolver(),
+                        retention_observer=self._record_retention_selection,
                     )
 
                     if new_blocks is not None:
@@ -1082,6 +1085,7 @@ class Scheduler(SchedulerInterface):
                     retention_resolver=self._make_waiting_demand_retention_resolver(
                         exclude=request
                     ),
+                    retention_observer=self._record_retention_selection,
                 )
 
                 if new_blocks is None:
@@ -2291,22 +2295,40 @@ class Scheduler(SchedulerInterface):
         window = self.scheduler_config.kv_aware_candidate_window
 
         def resolver() -> set[int]:
+            stats = self.kv_retention_stats
+            stats.resolver_calls += 1
             retained_ids: set[int] = set()
-            for candidate in self._iter_waiting_demand_candidates(window):
+            candidates = self._iter_waiting_demand_candidates(window)
+            stats.candidates += len(candidates)
+            for candidate in candidates:
                 if candidate is exclude:
                     # The request being allocated has its real hit blocks
                     # adopted (touched) inside this same allocation.
                     continue
-                blocks, _ = kv_cache_manager.peek_computed_blocks(candidate)
+                blocks, num_computed_tokens = kv_cache_manager.peek_computed_blocks(
+                    candidate
+                )
+                if num_computed_tokens > 0:
+                    stats.candidates_with_hits += 1
                 for group_blocks in blocks.blocks:
                     retained_ids.update(
                         block.block_id
                         for block in group_blocks
                         if block.block_id is not None
                     )
+            stats.blocks += len(retained_ids)
             return retained_ids
 
         return resolver
+
+    def _record_retention_selection(
+        self,
+        avoided_evictions: int,
+        fallback_blocks: int,
+    ) -> None:
+        stats = self.kv_retention_stats
+        stats.avoided_evictions += avoided_evictions
+        stats.fallback_blocks += fallback_blocks
 
     def _handle_stopped_request(self, request: Request) -> bool:
         """Return True if finished (can be False for resumable requests)."""
@@ -2756,6 +2778,8 @@ class Scheduler(SchedulerInterface):
         connector_stats_payload = (
             kv_connector_stats.data if kv_connector_stats else None
         )
+        kv_retention_stats = self.kv_retention_stats
+        self.kv_retention_stats = KVRetentionStats()
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
@@ -2764,6 +2788,7 @@ class Scheduler(SchedulerInterface):
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
             kv_cache_eviction_events=eviction_events,
+            kv_retention_stats=kv_retention_stats,
             spec_decoding_stats=spec_stats,
             kv_connector_stats=connector_stats_payload,
             cudagraph_stats=cudagraph_stats,

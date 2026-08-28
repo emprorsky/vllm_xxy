@@ -4385,9 +4385,14 @@ def test_soft_retention_eviction_order():
     manager = _seed_fully_cached_free_queue(5)
     pool = manager.block_pool
     assert _free_ids(manager) == [5, 4, 3, 2, 1]
-    hint = BlockRetentionHint(lambda: {4, 2})
+    selections = []
+    hint = BlockRetentionHint(
+        lambda: {4, 2},
+        lambda avoided, fallback: selections.append((avoided, fallback)),
+    )
     allocated = [pool.get_new_blocks(1, hint)[0].block_id for _ in range(5)]
     assert allocated == [5, 3, 1, 4, 2]
+    assert selections == [(0, 0), (1, 0), (1, 0), (0, 1), (0, 1)]
     assert pool.free_block_queue.num_free_blocks == 0
 
 

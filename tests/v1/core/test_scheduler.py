@@ -6346,6 +6346,14 @@ def test_retention_candidate_window_is_bounded():
     scheduler.schedule()
 
     assert peeked == ["X0", "X1"]
+    assert scheduler.kv_retention_stats.resolver_calls == 1
+    assert scheduler.kv_retention_stats.candidates == 2
+    assert scheduler.kv_retention_stats.candidates_with_hits == 0
+    assert scheduler.kv_retention_stats.blocks == 0
+    flushed_stats = scheduler.make_stats()
+    assert flushed_stats is not None
+    assert flushed_stats.kv_retention_stats.resolver_calls == 1
+    assert scheduler.kv_retention_stats.resolver_calls == 0
 
 
 def test_retention_does_not_change_admission_order():

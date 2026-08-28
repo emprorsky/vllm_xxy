@@ -130,7 +130,7 @@ class SchedulerConfig:
       original order when required. Retention is a preference only; it never
       changes allocation feasibility, admission order, or refcounts."""
 
-    kv_aware_candidate_window: int = Field(default=16, ge=1)
+    kv_aware_candidate_window: int = Field(default=8, ge=1)
     """Upper bound on the number of near-head waiting requests probed for
     prefix-cache demand when ``prefix_cache_eviction_policy`` is
     "waiting_queue_aware" (and reused by later kv-aware admission features)."""

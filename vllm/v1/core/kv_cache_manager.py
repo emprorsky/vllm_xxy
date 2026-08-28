@@ -395,6 +395,7 @@ class KVCacheManager:
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
         retention_resolver: Callable[[], set[int]] | None = None,
+        retention_observer: Callable[[int, int], None] | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -431,6 +432,8 @@ class KVCacheManager:
                 when possible while selecting free pages. Shared by all physical
                 allocations of this transaction (including hybrid groups), so
                 the demand scan runs at most once per allocation.
+            retention_observer: Optional callback receiving the number of LRU
+                evictions avoided and retained blocks consumed as fallback.
 
         Blocks layout:
         ```
@@ -572,7 +575,7 @@ class KVCacheManager:
             return None
 
         retention_hint = (
-            BlockRetentionHint(retention_resolver)
+            BlockRetentionHint(retention_resolver, retention_observer)
             if retention_resolver is not None and self.enable_caching
             else None
         )

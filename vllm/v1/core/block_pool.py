@@ -673,15 +673,32 @@ class BlockPool:
         if retention_hint is None or not self.enable_caching:
             ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
         else:
-            cached_eviction_possible = any(
-                block.block_hash is not None
-                for block in itertools.islice(
+            lru_candidates = list(
+                itertools.islice(
                     self.free_block_queue.iter_blocks_after(None), num_blocks
                 )
+            )
+            cached_eviction_possible = any(
+                block.block_hash is not None for block in lru_candidates
             )
             if cached_eviction_possible:
                 retained_ids = retention_hint.resolve()
                 ret = self.free_block_queue.popleft_n_avoiding(num_blocks, retained_ids)
+                selected_ids = {block.block_id for block in ret}
+                avoided_evictions = sum(
+                    block.block_hash is not None
+                    and block.block_id in retained_ids
+                    and block.block_id not in selected_ids
+                    for block in lru_candidates
+                )
+                fallback_blocks = sum(
+                    block.block_hash is not None and block.block_id in retained_ids
+                    for block in ret
+                )
+                retention_hint.record_selection(
+                    avoided_evictions,
+                    fallback_blocks,
+                )
             else:
                 # The first num_blocks free pages are unhashed, so this
                 # allocation cannot evict a cached block: keep the fast path

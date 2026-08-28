@@ -168,6 +168,18 @@ class KVCacheEvictionEvent:
 
 
 @dataclass
+class KVRetentionStats:
+    """Waiting-demand KV retention activity since the previous stats flush."""
+
+    resolver_calls: int = 0
+    candidates: int = 0
+    candidates_with_hits: int = 0
+    blocks: int = 0
+    avoided_evictions: int = 0
+    fallback_blocks: int = 0
+
+
+@dataclass
 class SchedulerIterationDetails:
     """Scheduler-side details for one engine iteration."""
 
@@ -202,6 +214,7 @@ class SchedulerStats:
     connector_prefix_cache_stats: PrefixCacheStats | None = None
 
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
+    kv_retention_stats: KVRetentionStats = field(default_factory=KVRetentionStats)
 
     spec_decoding_stats: SpecDecodingStats | None = None
     kv_connector_stats: dict[str, Any] | None = None

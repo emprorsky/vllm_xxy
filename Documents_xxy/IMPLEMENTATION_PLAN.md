@@ -522,7 +522,7 @@ phase lands:
 |---|---|---|---|
 | existing/1 | `preemption_policy: Literal["default", "recompute_aware"]` | `default` | selects victim policy; optimized value also enables same-tier resume ordering |
 | 2 | `prefix_cache_eviction_policy: Literal["lru", "waiting_queue_aware"]` | `lru` | enables soft retention |
-| 2/3 | `kv_aware_candidate_window: int` | a small validated value, proposed 16 | common upper bound for retention/admission candidates |
+| 2/3 | `kv_aware_candidate_window: int` | 8 (tuned from the proposed 16) | common upper bound for retention/admission candidates |
 | 3 | `admission_policy: Literal["default", "cache_affinity"]` | `default` | enables bounded cache-affinity ordering |
 | 3 | `kv_aware_aging_threshold_s: float` | benchmarked non-negative value | promotes starved same-tier candidates |
 

@@ -235,8 +235,13 @@ class BlockRetentionHint:
     requests could hit in the prefix cache.
     """
 
-    def __init__(self, resolver: Callable[[], set[int]]) -> None:
+    def __init__(
+        self,
+        resolver: Callable[[], set[int]],
+        selection_observer: Callable[[int, int], None] | None = None,
+    ) -> None:
         self._resolver = resolver
+        self._selection_observer = selection_observer
         self._ids: set[int] | None = None
 
     def resolve(self) -> set[int]:
@@ -244,6 +249,11 @@ class BlockRetentionHint:
         if self._ids is None:
             self._ids = self._resolver()
         return self._ids
+
+    def record_selection(self, avoided_evictions: int, fallback_blocks: int) -> None:
+        """Record how the hint changed a physical block selection."""
+        if self._selection_observer is not None:
+            self._selection_observer(avoided_evictions, fallback_blocks)
 
 
 class FreeKVCacheBlockQueue:
