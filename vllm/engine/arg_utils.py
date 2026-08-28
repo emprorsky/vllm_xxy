@@ -102,7 +102,11 @@ from vllm.config.parallel import (
     DistributedExecutorBackend,
     ExpertPlacementStrategy,
 )
-from vllm.config.scheduler import PreemptionPolicy, SchedulerPolicy
+from vllm.config.scheduler import (
+    PreemptionPolicy,
+    PrefixCacheEvictionPolicy,
+    SchedulerPolicy,
+)
 from vllm.config.utils import get_field
 from vllm.config.vllm import OptimizationLevel, PerformanceMode
 from vllm.logger import init_logger, suppress_logging
@@ -680,6 +684,10 @@ class EngineArgs:
     enable_mm_processor_stats: bool = ObservabilityConfig.enable_mm_processor_stats
     scheduling_policy: SchedulerPolicy = SchedulerConfig.policy
     preemption_policy: PreemptionPolicy = SchedulerConfig.preemption_policy
+    prefix_cache_eviction_policy: PrefixCacheEvictionPolicy = (
+        SchedulerConfig.prefix_cache_eviction_policy
+    )
+    kv_aware_candidate_window: int = SchedulerConfig.kv_aware_candidate_window
     scheduler_cls: str | type[object] | None = SchedulerConfig.scheduler_cls
 
     pooler_config: PoolerConfig | None = ModelConfig.pooler_config
@@ -1568,6 +1576,14 @@ class EngineArgs:
             "--preemption-policy", **scheduler_kwargs["preemption_policy"]
         )
         scheduler_group.add_argument(
+            "--prefix-cache-eviction-policy",
+            **scheduler_kwargs["prefix_cache_eviction_policy"],
+        )
+        scheduler_group.add_argument(
+            "--kv-aware-candidate-window",
+            **scheduler_kwargs["kv_aware_candidate_window"],
+        )
+        scheduler_group.add_argument(
             "--enable-chunked-prefill",
             **{
                 **scheduler_kwargs["enable_chunked_prefill"],
@@ -2359,6 +2375,8 @@ class EngineArgs:
             is_encoder_decoder=model_config.is_encoder_decoder,
             policy=self.scheduling_policy,
             preemption_policy=self.preemption_policy,
+            prefix_cache_eviction_policy=self.prefix_cache_eviction_policy,
+            kv_aware_candidate_window=self.kv_aware_candidate_window,
             scheduler_cls=self.scheduler_cls,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
             scheduler_reserve_full_isl=self.scheduler_reserve_full_isl,

@@ -225,6 +225,27 @@ class KVCacheBlockCopy(NamedTuple):
     dst_block_id: int
 
 
+class BlockRetentionHint:
+    """Allocation-scoped lazy hint of block IDs to retain when possible.
+
+    Wraps a resolver callable so the demand scan runs at most once per
+    allocation transaction, and only when the block pool is about to evict
+    cached pages. The resolver must be read-only with respect to the block
+    pool and must return the union of physical block IDs that near-term
+    requests could hit in the prefix cache.
+    """
+
+    def __init__(self, resolver: Callable[[], set[int]]) -> None:
+        self._resolver = resolver
+        self._ids: set[int] | None = None
+
+    def resolve(self) -> set[int]:
+        """Resolve (and memoize) the retained block IDs."""
+        if self._ids is None:
+            self._ids = self._resolver()
+        return self._ids
+
+
 class FreeKVCacheBlockQueue:
     """This class organizes a list of KVCacheBlock objects to a doubly linked
     list of free blocks. We implement this class instead of using Python
@@ -346,6 +367,58 @@ class FreeKVCacheBlockQueue:
             self.fake_free_list_head.next_free_block = curr_block
             curr_block.prev_free_block = self.fake_free_list_head
         return ret
+
+    def popleft_n_avoiding(self, n: int, retained_ids: set[int]) -> list[KVCacheBlock]:
+        """Pop the first n free blocks, avoiding retained blocks when possible.
+
+        Scans free blocks from the head, skipping blocks whose IDs are in
+        ``retained_ids`` (retention only applies to blocks that carry a
+        prefix-cache hash) until n blocks are found or the queue is exhausted.
+        Skipped retained blocks are then consumed as fallback in their
+        original queue order, so the allocation never fails while free blocks
+        remain. Every unselected block stays in the queue with its relative
+        order and links unchanged.
+
+        Args:
+            n: The number of blocks to pop.
+            retained_ids: Block IDs to avoid when possible.
+
+        Returns:
+            A list of n free blocks, non-retained ones first.
+        """
+        if n == 0:
+            return []
+        assert self.num_free_blocks >= n
+        self.num_free_blocks -= n
+
+        selected: list[KVCacheBlock] = []
+        retained: list[KVCacheBlock] = []
+        block = self.fake_free_list_head.next_free_block
+        while len(selected) < n and block is not self.fake_free_list_tail:
+            assert block is not None
+            if block.block_id in retained_ids and block.block_hash is not None:
+                retained.append(block)
+            else:
+                selected.append(block)
+            block = block.next_free_block
+
+        if len(selected) < n:
+            # Fallback: consume retained blocks in original queue order.
+            # The scan reached the tail, so every free block was visited and
+            # selected + retained covers the whole queue.
+            needed = n - len(selected)
+            selected.extend(retained[:needed])
+            del retained[:needed]
+            assert len(selected) == n
+
+        # Unlink every chosen block in place; unchosen blocks (skipped
+        # retained blocks and the unvisited tail) keep their relative order.
+        for block in selected:
+            block.prev_free_block.next_free_block = block.next_free_block
+            block.next_free_block.prev_free_block = block.prev_free_block
+            block.prev_free_block = None
+            block.next_free_block = None
+        return selected
 
     def remove(self, block: KVCacheBlock) -> None:
         """Remove a block in the free list and reduce num_free_blocks by 1.

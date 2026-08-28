@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
 import torch
+from transformers import OPTConfig
 
 from vllm.config import (
     CacheConfig,
@@ -31,9 +33,18 @@ LONG_PREFILL_THRESHOLD = 15
 EOS_TOKEN_ID = 50256
 
 
-def build_scheduler():
+def build_scheduler(tmp_path, preemption_policy):
+    OPTConfig(
+        hidden_size=64,
+        ffn_dim=128,
+        num_attention_heads=1,
+        num_hidden_layers=1,
+        vocab_size=128,
+        max_position_embeddings=MAX_MODEL_LEN,
+        word_embed_proj_dim=64,
+    ).save_pretrained(tmp_path)
     model_config = ModelConfig(
-        model="facebook/opt-350m",
+        model=str(tmp_path),
         trust_remote_code=True,
         dtype="float16",
         seed=42,
@@ -48,6 +59,7 @@ def build_scheduler():
         enable_chunked_prefill=True,
         is_encoder_decoder=model_config.is_encoder_decoder,
         policy="priority",
+        preemption_policy=preemption_policy,
         watermark=0.0,
         scheduler_reserve_full_isl=False,
     )
@@ -116,8 +128,9 @@ def mock_output(out, tok=100):
     )
 
 
-def test_priority_scheduler_preempt_skipped_request():
-    scheduler = build_scheduler()
+@pytest.mark.parametrize("preemption_policy", ["default", "recompute_aware"])
+def test_priority_scheduler_preempt_skipped_request(tmp_path, preemption_policy):
+    scheduler = build_scheduler(tmp_path, preemption_policy)
 
     # R1: Add request A (Worst priority)
     A = make_request("A", num_tokens=200, priority=9, arrival_time=1.0)
@@ -147,3 +160,8 @@ def test_priority_scheduler_preempt_skipped_request():
         "because the req_index was not decremented after preempting A."
     )
     assert C.status == RequestStatus.RUNNING
+    assert A.status == RequestStatus.PREEMPTED
+    assert A.num_computed_tokens == 0
+    assert A.num_preemptions == 1
+    assert A not in scheduler.running
+    assert sum(request is A for request in scheduler.waiting) == 1

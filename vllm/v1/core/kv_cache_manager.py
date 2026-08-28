@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, overload
 
@@ -14,7 +14,11 @@ from vllm.v1.core.kv_cache_coordinator import (
     get_kv_cache_coordinator,
 )
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
-from vllm.v1.core.kv_cache_utils import KVCacheBlock, KVCacheBlockCopy
+from vllm.v1.core.kv_cache_utils import (
+    BlockRetentionHint,
+    KVCacheBlock,
+    KVCacheBlockCopy,
+)
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     CrossAttentionSpec,
@@ -229,22 +233,13 @@ class KVCacheManager:
             preempted=request.num_preemptions > 0,
         )
 
-    def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int, int]:
-        """Get the computed (cached) blocks for the request.
-        Note that the computed blocks must be full.
+    def _lookup_computed_blocks(
+        self, request: Request
+    ) -> tuple[KVCacheBlocks, int, int]:
+        """Shared read-only local prefix lookup for admission and probes.
 
-        Args:
-            request: The request to get the computed blocks.
-
-        Returns:
-            A tuple containing:
-                - A list of blocks that are computed for the request.
-                - The number of computed tokens.
-                - ``shared_prefix_boundary``: the block-aligned token position of
-                  a shared prefix that a sparse-retention group (Mamba / sliding
-                  window) has not cached yet (Marconi-style APC), or 0 if none.
-                  Pinned so sparse prefix-cache retention does not drop
-                  the junction and defeat cross-request reuse.
+        Returns the same triple as ``get_computed_blocks`` without any
+        side effect (no events, no stats, no refcount changes).
         """
         # We skip finding the prefix cache hit when prefix caching is
         # disabled or the request is marked as skipping kv cache read
@@ -266,6 +261,57 @@ class KVCacheManager:
             )
         )
 
+        # The junction to pin is where the lagging sparse-retention group stops
+        # (``num_new_computed_tokens``) plus the uncached shared prefix -- i.e.
+        # the longest single-group hit. Sub-block gaps are left to the mask,
+        # which floors to the alignment boundary (a no-op there).
+        shared_prefix_boundary = (
+            num_new_computed_tokens + num_uncached if num_uncached else 0
+        )
+
+        blocks = self.create_kv_cache_blocks(computed_blocks)
+        return blocks, num_new_computed_tokens, shared_prefix_boundary
+
+    def peek_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int]:
+        """Read-only probe of the request's local prefix-cache hit.
+
+        Uses the same coordinator hit semantics and ``num_tokens - 1`` cap as
+        real local admission, but emits no cache events, records no prefix
+        stats, never touches/refcounts blocks, never consults a KV connector,
+        and does not mutate ``request.shared_prefix_boundary``.
+
+        Args:
+            request: The request to probe.
+
+        Returns:
+            A tuple containing:
+                - The blocks that a real admission lookup would hit.
+                - The number of local computed tokens of that hit.
+        """
+        blocks, num_new_computed_tokens, _ = self._lookup_computed_blocks(request)
+        return blocks, num_new_computed_tokens
+
+    def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int, int]:
+        """Get the computed (cached) blocks for the request.
+        Note that the computed blocks must be full.
+
+        Args:
+            request: The request to get the computed blocks.
+
+        Returns:
+            A tuple containing:
+                - A list of blocks that are computed for the request.
+                - The number of computed tokens.
+                - ``shared_prefix_boundary``: the block-aligned token position of
+                  a shared prefix that a sparse-retention group (Mamba / sliding
+                  window) has not cached yet (Marconi-style APC), or 0 if none.
+                  Pinned so sparse prefix-cache retention does not drop
+                  the junction and defeat cross-request reuse.
+        """
+        blocks, num_new_computed_tokens, shared_prefix_boundary = (
+            self._lookup_computed_blocks(request)
+        )
+
         # When kv_cache_report_mode is "full", emit BlockStored events
         # for the reused prefix cache blocks so that external consumers
         # (e.g. gateway) can learn about them.
@@ -274,7 +320,7 @@ class KVCacheManager:
             and self.enable_kv_cache_events
             and getattr(request, "kv_cache_report_mode", "incremental") == "full"
         ):
-            for group_idx, group_blocks in enumerate(computed_blocks):
+            for group_idx, group_blocks in enumerate(blocks.blocks):
                 num_blocks = len(group_blocks)
                 if num_blocks > 0:
                     group = self.kv_cache_config.kv_cache_groups[group_idx]
@@ -286,15 +332,6 @@ class KVCacheManager:
                         group_idx,
                     )
 
-        # The junction to pin is where the lagging sparse-retention group stops
-        # (``num_new_computed_tokens``) plus the uncached shared prefix -- i.e.
-        # the longest single-group hit. Sub-block gaps are left to the mask,
-        # which floors to the alignment boundary (a no-op there).
-        shared_prefix_boundary = (
-            num_new_computed_tokens + num_uncached if num_uncached else 0
-        )
-
-        blocks = self.create_kv_cache_blocks(computed_blocks)
         return blocks, num_new_computed_tokens, shared_prefix_boundary
 
     def get_computed_blocks_for_connector(
@@ -357,6 +394,7 @@ class KVCacheManager:
         full_sequence_must_fit: bool = False,
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
+        retention_resolver: Callable[[], set[int]] | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -389,6 +427,10 @@ class KVCacheManager:
                 blocks an already in-flight (prefilling) sequence is relying on.
             has_scheduled_reqs: Whether any requests are already scheduled to run
                 this step, controls whether watermark is applied.
+            retention_resolver: Optional lazy resolver of block IDs to retain
+                when possible while selecting free pages. Shared by all physical
+                allocations of this transaction (including hybrid groups), so
+                the demand scan runs at most once per allocation.
 
         Blocks layout:
         ```
@@ -529,6 +571,12 @@ class KVCacheManager:
             # Cannot allocate new blocks
             return None
 
+        retention_hint = (
+            BlockRetentionHint(retention_resolver)
+            if retention_resolver is not None and self.enable_caching
+            else None
+        )
+
         if (
             new_computed_block_list is not self.empty_kv_cache_blocks.blocks
             or num_external_computed_tokens > 0
@@ -540,6 +588,7 @@ class KVCacheManager:
                 new_computed_blocks=new_computed_block_list,
                 num_local_computed_tokens=num_local_computed_tokens,
                 num_external_computed_tokens=num_external_computed_tokens,
+                retention_hint=retention_hint,
             )
 
         new_blocks = self.coordinator.allocate_new_blocks(
@@ -547,6 +596,7 @@ class KVCacheManager:
             num_tokens_need_slot,
             num_tokens_main_model,
             num_encoder_tokens,
+            retention_hint=retention_hint,
         )
 
         # P/D: delay caching blocks if we have to recv from

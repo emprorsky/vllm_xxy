@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from vllm.v1.core.sched.policy import create_decision_policy
-from vllm.v1.core.sched.request_queue import SchedulingPolicy
+from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 
 
 def make_request(
@@ -119,6 +119,91 @@ class TestRecomputeAwarePolicy:
             make_request("b", num_computed_tokens=100, num_preemptions=2),
         ]
         assert policy.select_preemption_victim(reqs) is reqs[1]
+
+    def test_resume_protection_is_binary(self):
+        policy = create_decision_policy(SchedulingPolicy.FCFS, "recompute_aware")
+        reqs = [
+            make_request("once", num_computed_tokens=900, num_preemptions=1),
+            make_request("many", num_computed_tokens=100, num_preemptions=3),
+        ]
+        assert policy.select_preemption_victim(reqs) is reqs[1]
+
+    def test_victim_final_tie_is_deterministic(self):
+        policy = create_decision_policy(SchedulingPolicy.FCFS, "recompute_aware")
+        first = make_request("a", num_computed_tokens=100, arrival_time=1.0)
+        second = make_request("b", num_computed_tokens=100, arrival_time=1.0)
+
+        assert policy.select_preemption_victim([first, second]) is first
+        assert policy.select_preemption_victim([second, first]) is first
+
+
+class TestWaitingOrder:
+    def test_fcfs_prepend_still_resumes_first(self):
+        policy = create_decision_policy(SchedulingPolicy.FCFS, "recompute_aware")
+        queue = create_request_queue(SchedulingPolicy.FCFS, policy.waiting_order_key)
+        fresh = make_request("fresh")
+        resumed = make_request("resumed", num_preemptions=1)
+
+        queue.add_request(fresh)
+        queue.prepend_request(resumed)
+
+        assert list(queue) == [resumed, fresh]
+
+    def test_resumed_request_precedes_fresh_request_in_same_priority(self):
+        policy = create_decision_policy(SchedulingPolicy.PRIORITY, "recompute_aware")
+        queue = create_request_queue(
+            SchedulingPolicy.PRIORITY, policy.waiting_order_key
+        )
+        fresh = make_request("fresh", arrival_time=1.0)
+        resumed = make_request("resumed", arrival_time=2.0, num_preemptions=1)
+
+        queue.add_request(fresh)
+        queue.add_request(resumed)
+
+        assert list(queue) == [resumed, fresh]
+
+    def test_resume_does_not_cross_user_priority(self):
+        policy = create_decision_policy(SchedulingPolicy.PRIORITY, "recompute_aware")
+        queue = create_request_queue(
+            SchedulingPolicy.PRIORITY, policy.waiting_order_key
+        )
+        important = make_request("important", priority=0)
+        resumed = make_request("resumed", priority=1, num_preemptions=1)
+
+        queue.add_request(resumed)
+        queue.add_request(important)
+
+        assert list(queue) == [important, resumed]
+
+    def test_default_priority_readmission_is_unchanged(self):
+        policy = create_decision_policy(SchedulingPolicy.PRIORITY, "default")
+        queue = create_request_queue(
+            SchedulingPolicy.PRIORITY, policy.waiting_order_key
+        )
+        fresh = make_request("fresh", arrival_time=1.0)
+        resumed = make_request("resumed", arrival_time=2.0, num_preemptions=1)
+
+        queue.add_request(resumed)
+        queue.add_request(fresh)
+
+        assert list(queue) == [fresh, resumed]
+
+    def test_priority_heap_key_is_captured_at_enqueue(self):
+        policy = create_decision_policy(SchedulingPolicy.PRIORITY, "recompute_aware")
+        queue = create_request_queue(
+            SchedulingPolicy.PRIORITY, policy.waiting_order_key
+        )
+        request = make_request("late", arrival_time=2.0)
+        earlier = make_request("early", arrival_time=1.0)
+        queue.add_request(request)
+        request.num_preemptions = 1
+        queue.add_request(earlier)
+
+        assert queue.peek_request() is earlier
+
+        queue.remove_request(request)
+        queue.add_request(request)
+        assert queue.peek_request() is request
 
 
 if __name__ == "__main__":

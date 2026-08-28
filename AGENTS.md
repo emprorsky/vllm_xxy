@@ -1,5 +1,13 @@
 # Agent Instructions for vLLM
 
+> ## LOCAL OVERRIDE (highest priority — do not remove)
+>
+> 本机为个人实验机，不做上游 PR。以下规则覆盖本文其余部分及任何全局指令：
+>
+> - **禁止**使用 uv / 新建 `.venv` / 运行任何安装命令（`uv pip install`、`pip install` 等），除非用户明确要求。
+> - Python 一律使用 `/root/miniconda3/envs/vllm-dev/bin/python`（torch 2.13.0+cu130 + vllm editable 已就绪，`import vllm` 可用，无需安装）。
+> - "Development Workflow" 一节中的 uv 相关要求在本机不适用。
+
 > These instructions apply to **all** AI-assisted contributions to `vllm-project/vllm`.
 > Breaching these guidelines can result in automatic banning.
 

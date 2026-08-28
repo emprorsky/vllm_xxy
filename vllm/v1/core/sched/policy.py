@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Scheduler decision policies for preemption victim selection.
+"""Scheduler decision policies for preemption and waiting order.
 
 Design doc: Documents_xxy/vllm_kv_aware_project_design.md section 5/6.
 
@@ -12,19 +12,29 @@ Two policies:
   Hard constraint first (user priority tier), then minimize recompute cost
   (``num_computed_tokens``), then stable tie-breaks.
 
-Both policies only decide *who* gets preempted. All request state mutation
-(freeing blocks, resetting computed tokens, re-queueing) remains in the
-Scheduler.
+Both policies are read-only. All request state mutation (freeing blocks,
+resetting computed tokens, re-queueing) remains in the Scheduler and queues.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from vllm.v1.core.sched.request_queue import SchedulingPolicy
 
 if TYPE_CHECKING:
     from vllm.v1.request import Request
+
+
+RequestOrderKey = tuple[Any, ...]
+
+
+class SchedulingDecisionPolicy(Protocol):
+    """Read-only scheduling decisions shared by Scheduler and its queues."""
+
+    def select_preemption_victim(self, running: list[Request]) -> Request: ...
+
+    def waiting_order_key(self, request: Request) -> RequestOrderKey: ...
 
 
 class DefaultSchedulingDecisionPolicy:
@@ -39,6 +49,15 @@ class DefaultSchedulingDecisionPolicy:
             return max(running, key=lambda r: (r.priority, r.arrival_time))
         # FCFS: preempt the newest request (last in the running list).
         return running[-1]
+
+    def waiting_order_key(self, request: Request) -> RequestOrderKey:
+        """Return the baseline priority-queue order captured at enqueue."""
+        return (
+            request.priority,
+            request.arrival_time,
+            request.request_id,
+            id(request),
+        )
 
 
 class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
@@ -57,8 +76,8 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
        ``num_computed_tokens`` (tokens that would have to be recomputed after
        re-admission). P0 deliberately avoids raw block counts because blocks
        may be shared and not reclaimable.
-    4. Ties break toward the latest arrival (consistent with the FCFS
-       baseline), so the victim is the "coldest, cheapest-to-restart" request.
+    4. Ties break toward the latest arrival, then request ID, so the victim is
+       stable regardless of running-list position.
     """
 
     def select_preemption_victim(self, running: list[Request]) -> Request:
@@ -72,16 +91,27 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
         return min(
             candidates,
             key=lambda r: (
-                r.num_preemptions,
+                r.num_preemptions > 0,
                 r.num_computed_tokens,
                 -r.arrival_time,
+                r.request_id,
             ),
+        )
+
+    def waiting_order_key(self, request: Request) -> RequestOrderKey:
+        """Prioritize resumed requests without crossing user priorities."""
+        return (
+            request.priority,
+            request.num_preemptions == 0,
+            request.arrival_time,
+            request.request_id,
+            id(request),
         )
 
 
 def create_decision_policy(
     policy: SchedulingPolicy, preemption_policy: str
-) -> DefaultSchedulingDecisionPolicy:
+) -> SchedulingDecisionPolicy:
     """Factory: ``recompute_aware`` opts into the KV-aware policy."""
     if preemption_policy == "recompute_aware":
         return RecomputeAwareSchedulingDecisionPolicy(policy)

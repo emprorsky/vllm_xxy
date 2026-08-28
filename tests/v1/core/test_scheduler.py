@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
+import random
 from concurrent.futures import Future
 from unittest.mock import Mock
 
 import pytest
 import torch
+from transformers import OPTConfig
 
 import vllm.envs as envs
 from vllm.config import (
@@ -17,6 +19,7 @@ from vllm.config import (
     SpeculativeConfig,
     VllmConfig,
 )
+from vllm.config.scheduler import PreemptionPolicy
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.multimodal.inputs import (
     MultiModalFeatureSpec,
@@ -29,6 +32,7 @@ from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
+from vllm.v1.core.sched.request_queue import PriorityRequestQueue
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.single_type_kv_cache_manager import register_all_kvcache_specs
 from vllm.v1.engine import FinishReason
@@ -2572,6 +2576,7 @@ def create_scheduler_with_priority(
     use_ec_connector: bool = False,
     ec_role: str | None = None,
     use_v2_model_runner: bool | None = None,
+    preemption_policy: PreemptionPolicy = "default",
 ) -> Scheduler:
     """Create scheduler with priority policy enabled.
 
@@ -2603,6 +2608,7 @@ def create_scheduler_with_priority(
         enable_chunked_prefill=True,
         is_encoder_decoder=model_config.is_encoder_decoder,
         policy="priority",  # Enable priority scheduling
+        preemption_policy=preemption_policy,
         # Ensure admission/preemption mechanics are deterministic
         watermark=0.0,
     )
@@ -2675,6 +2681,19 @@ def create_scheduler_with_priority(
         use_v2_model_runner = bool(envs.VLLM_USE_V2_MODEL_RUNNER)
     scheduler.use_v2_model_runner = use_v2_model_runner
     return scheduler
+
+
+def create_local_opt_config(tmp_path) -> str:
+    OPTConfig(
+        hidden_size=64,
+        ffn_dim=128,
+        num_attention_heads=1,
+        num_hidden_layers=1,
+        vocab_size=128,
+        max_position_embeddings=256,
+        word_embed_proj_dim=64,
+    ).save_pretrained(tmp_path)
+    return str(tmp_path)
 
 
 _none_hash_initialized = False
@@ -2839,6 +2858,78 @@ def test_priority_scheduling_arrival_time_tiebreaker():
     # req_1 (1.0), req_2 (2.0), req_0 (3.0)
     scheduled_req_ids = [req.req_id for req in output.scheduled_new_reqs]
     assert scheduled_req_ids == ["1", "2", "0"]
+
+
+@pytest.mark.parametrize(
+    ("preemption_policy", "expected_request_id"),
+    [("default", "fresh"), ("recompute_aware", "resumed")],
+)
+def test_priority_resume_order(tmp_path, preemption_policy, expected_request_id):
+    scheduler = create_scheduler_with_priority(
+        model=create_local_opt_config(tmp_path),
+        max_num_seqs=1,
+        max_num_batched_tokens=128,
+        preemption_policy=preemption_policy,
+    )
+    fresh, resumed = create_requests_with_priority(
+        num_requests=2,
+        priorities=[0, 0],
+        arrival_times=[1.0, 2.0],
+        req_ids=["fresh", "resumed"],
+    )
+    resumed.status = RequestStatus.PREEMPTED
+    resumed.num_preemptions = 1
+    scheduler.add_request(fresh)
+    scheduler.add_request(resumed)
+
+    scheduler.schedule()
+
+    assert scheduler.running[0].request_id == expected_request_id
+
+
+def test_priority_resume_does_not_cross_user_priority(tmp_path):
+    scheduler = create_scheduler_with_priority(
+        model=create_local_opt_config(tmp_path),
+        max_num_seqs=1,
+        max_num_batched_tokens=128,
+        preemption_policy="recompute_aware",
+    )
+    important, resumed = create_requests_with_priority(
+        num_requests=2,
+        priorities=[0, 1],
+        arrival_times=[2.0, 1.0],
+        req_ids=["important", "resumed"],
+    )
+    resumed.status = RequestStatus.PREEMPTED
+    resumed.num_preemptions = 1
+    scheduler.add_request(resumed)
+    scheduler.add_request(important)
+
+    output = scheduler.schedule()
+
+    assert output.scheduled_new_reqs[0].req_id == important.request_id
+
+
+def test_priority_waiting_queue_merge_uses_policy_order(tmp_path):
+    scheduler = create_scheduler_with_priority(
+        model=create_local_opt_config(tmp_path),
+        max_num_batched_tokens=128,
+        preemption_policy="recompute_aware",
+    )
+    fresh, resumed = create_requests_with_priority(
+        num_requests=2,
+        priorities=[0, 0],
+        arrival_times=[1.0, 2.0],
+        req_ids=["fresh", "resumed"],
+    )
+    resumed.num_preemptions = 1
+    scheduler.waiting.add_request(fresh)
+    fresh.num_preemptions = 1
+    scheduler.skipped_waiting.add_request(resumed)
+
+    selected = scheduler._select_waiting_queue_for_scheduling()
+
+    assert selected is scheduler.skipped_waiting
 
 
 def test_priority_scheduling_mixed_priority_and_arrival():
@@ -6134,3 +6225,212 @@ def test_encoder_input_skipped_when_connector_already_has_the_item(ec_role: str)
 
     assert output.num_scheduled_tokens[req_id] > 0
     assert not output.scheduled_encoder_inputs.get(req_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: waiting-queue-informed soft prefix retention.
+# ---------------------------------------------------------------------------
+
+
+def _make_retention_request(
+    req_id: str,
+    prompt_token_ids: list[int],
+    max_tokens: int = 16,
+    block_size: int = 16,
+) -> Request:
+    init_none_hash(sha256)
+    sampling_params = SamplingParams(ignore_eos=True, max_tokens=max_tokens)
+    sampling_params.update_from_generation_config({}, EOS_TOKEN_ID)
+    return Request(
+        request_id=req_id,
+        prompt_token_ids=prompt_token_ids,
+        sampling_params=sampling_params,
+        pooling_params=None,
+        block_hasher=get_request_block_hasher(block_size, sha256),
+    )
+
+
+def _run_waiting_demand_scenario(policy: str, num_blocks: int = 7):
+    """P (3 blocks) and B (2 blocks) finish, leaving cached-free pages; R
+    (running) grows and needs one page while X waits, hitting P's pages.
+
+    Returns R's physical block IDs, whether X was admitted on the second
+    step, X's computed (cache-hit) tokens, and the number of free pages.
+    """
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        prefix_cache_eviction_policy=policy,
+        num_blocks=num_blocks,
+    )
+    p = _make_retention_request("P", [10] * 48, max_tokens=1)
+    b = _make_retention_request("B", [20] * 32, max_tokens=1)
+    r = _make_retention_request("R", [30] * 16, max_tokens=100)
+    # X shares P's 3-block prefix but cannot be admitted while the pool is
+    # fully occupied, so it stays near the head of the waiting queue.
+    x = _make_retention_request("X", [10] * 48 + [40] * 16, max_tokens=16)
+    for req in (p, b, r, x):
+        scheduler.add_request(req)
+
+    output1 = scheduler.schedule()
+    assert [req.req_id for req in output1.scheduled_new_reqs] == ["P", "B", "R"]
+    assert _num_waiting_requests(scheduler) == 1
+
+    # P and B finish after their single output token; their blocks become
+    # cached-free pages (R keeps decoding).
+    scheduler.update_from_output(output1, make_output(scheduler))
+
+    output2 = scheduler.schedule()
+    # Admission-time cache hit: the whole 64-token prompt is scheduled over
+    # num_computed_tokens, so the pre-admission hit is the complement.
+    x_hit = (
+        64 - output2.num_scheduled_tokens["X"]
+        if "X" in output2.num_scheduled_tokens
+        else 0
+    )
+    return (
+        scheduler.kv_cache_manager.get_blocks("R").get_block_ids()[0],
+        [req.req_id for req in output2.scheduled_new_reqs],
+        x_hit,
+        scheduler.kv_cache_manager.block_pool.free_block_queue.num_free_blocks,
+    )
+
+
+def test_waiting_prefix_demand_retains_near_head_hit():
+    # Retention mode: R's growth avoids X's hit pages (1, 2, 3) and evicts
+    # B's non-demand page 5 first, so X is later admitted with its full
+    # 3-block local hit.
+    r_ids, new_reqs, x_computed, _ = _run_waiting_demand_scenario("waiting_queue_aware")
+    assert r_ids == [6, 5]
+    assert "X" in new_reqs
+    assert x_computed == 48
+
+    # LRU baseline: R takes the queue head (page 3, one of X's hit pages),
+    # shrinking X's admission hit to 2 blocks.
+    r_ids, new_reqs, x_computed, _ = _run_waiting_demand_scenario("lru")
+    assert r_ids == [6, 3]
+    assert "X" in new_reqs
+    assert x_computed == 32
+
+
+def test_retention_candidate_window_is_bounded():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        prefix_cache_eviction_policy="waiting_queue_aware",
+        kv_aware_candidate_window=2,
+        num_blocks=5,  # pages 1-4
+    )
+    p = _make_retention_request("P", [10] * 48, max_tokens=1)
+    r = _make_retention_request("R", [30] * 16, max_tokens=100)
+    # Four waiting requests that can never fit (8 blocks each): the demand
+    # scan must probe exactly the first `kv_aware_candidate_window` of them.
+    waiting_reqs = [
+        _make_retention_request(f"X{i}", [100 + i] * 128, max_tokens=16)
+        for i in range(4)
+    ]
+    for req in (p, r, *waiting_reqs):
+        scheduler.add_request(req)
+
+    output1 = scheduler.schedule()
+    assert _num_waiting_requests(scheduler) == 4
+
+    peeked: list[str] = []
+    real_peek = scheduler.kv_cache_manager.peek_computed_blocks
+
+    def peek_spy(request):
+        peeked.append(request.request_id)
+        return real_peek(request)
+
+    scheduler.kv_cache_manager.peek_computed_blocks = peek_spy
+
+    scheduler.update_from_output(output1, make_output(scheduler))
+    scheduler.schedule()
+
+    assert peeked == ["X0", "X1"]
+
+
+def test_retention_does_not_change_admission_order():
+    def admission_trace(policy: str) -> list[list[str]]:
+        scheduler = create_scheduler(
+            enable_prefix_caching=True,
+            prefix_cache_eviction_policy=policy,
+            num_blocks=10000,
+        )
+        requests = [
+            _make_retention_request(f"req{i}", [i] * 32, max_tokens=4) for i in range(6)
+        ]
+        for request in requests:
+            scheduler.add_request(request)
+        trace = []
+        output = scheduler.schedule()
+        trace.append([req.request_id for req in scheduler.running])
+        for _ in range(2):
+            scheduler.update_from_output(output, make_output(scheduler))
+            output = scheduler.schedule()
+            trace.append([req.request_id for req in scheduler.running])
+        return trace
+
+    assert admission_trace("waiting_queue_aware") == admission_trace("lru")
+
+
+def test_retention_allocation_feasibility():
+    # All free cached pages are retained by X's demand, yet R's allocation
+    # succeeds through fallback and produces exactly the LRU baseline
+    # outcome: same blocks, same admission result, same free-page count.
+    def feasibility(policy: str):
+        scheduler = create_scheduler(
+            enable_prefix_caching=True,
+            prefix_cache_eviction_policy=policy,
+            num_blocks=5,  # pages 1-4: P(1-3), R(4), no room for X
+        )
+        p = _make_retention_request("P", [10] * 48, max_tokens=1)
+        r = _make_retention_request("R", [30] * 16, max_tokens=100)
+        x = _make_retention_request("X", [10] * 48 + [40] * 16, max_tokens=16)
+        for req in (p, r, x):
+            scheduler.add_request(req)
+
+        output1 = scheduler.schedule()
+        assert [req.req_id for req in output1.scheduled_new_reqs] == ["P", "R"]
+        assert _num_waiting_requests(scheduler) == 1
+        scheduler.update_from_output(output1, make_output(scheduler))
+
+        output2 = scheduler.schedule()
+        return (
+            scheduler.kv_cache_manager.get_blocks("R").get_block_ids()[0],
+            [req.req_id for req in output2.scheduled_new_reqs],
+            scheduler.requests["X"].num_computed_tokens,
+            scheduler.kv_cache_manager.block_pool.free_block_queue.num_free_blocks,
+        )
+
+    lru = feasibility("lru")
+    aware = feasibility("waiting_queue_aware")
+    assert aware == lru
+    # R's allocation succeeded even though every free page was retained.
+    assert lru[0] == [4, 3]
+    # X still cannot fit in either mode (its hit shrank identically).
+    assert "X" not in lru[1]
+
+
+def test_priority_peek_n_matches_pop_order():
+    """peek_n returns the true pop order without mutating the queue."""
+    rng = random.Random(0)
+    for _ in range(20):
+        queue = PriorityRequestQueue()
+        num_requests = rng.randint(1, 40)
+        requests = create_requests(num_requests=num_requests, num_tokens=10)
+        order = list(range(num_requests))
+        rng.shuffle(order)
+        for i in order:
+            queue.add_request(requests[i])
+
+        window = rng.randint(1, num_requests)
+        peeked = queue.peek_n(window)
+        popped = []
+        while queue:
+            popped.append(queue.pop_request())
+        assert peeked == popped[:window]
+
+        # peek_n left the queue intact: re-adding the popped requests in
+        # pop order reproduces the identical ordering.
+        for request in popped:
+            queue.add_request(request)
+        assert queue.peek_n(num_requests) == popped

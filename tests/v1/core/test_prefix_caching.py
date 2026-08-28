@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from math import lcm
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -32,6 +33,7 @@ from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager, Request
 from vllm.v1.core.kv_cache_utils import (
     BlockHash,
     BlockHashWithGroupId,
+    BlockRetentionHint,
     KVCacheBlock,
     get_block_hash,
     get_group_id,
@@ -74,6 +76,7 @@ def make_request(
     prompt_logprobs: int | None = None,
     cache_salt: str | None = None,
     lora_request: LoRARequest | None = None,
+    extra_args: dict | None = None,
 ):
     mm_features = []
     if mm_positions is not None:
@@ -87,7 +90,11 @@ def make_request(
             )
             mm_features.append(mm_feature)
 
-    sampling_params = SamplingParams(max_tokens=17, prompt_logprobs=prompt_logprobs)
+    sampling_params = SamplingParams(
+        max_tokens=17,
+        prompt_logprobs=prompt_logprobs,
+        extra_args=extra_args,
+    )
     sampling_params.update_from_generation_config({}, eos_token_id=100)
 
     return Request(
@@ -4334,3 +4341,301 @@ def test_swa_shared_prefix_reuse_under_zero_retention():
     assert last_req_hit(retention=0, pin=False) == 0
     # retention=0 with the pin keeps the junction window -> reuse restored.
     assert last_req_hit(retention=0, pin=True) == 4 * block_size
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: waiting-queue-informed soft prefix retention.
+# ---------------------------------------------------------------------------
+
+
+def _seed_fully_cached_free_queue(
+    num_pages: int, block_size: int = 16, **kwargs
+) -> KVCacheManager:
+    """Manager whose free queue holds only cached (hashed) pages.
+
+    A seed request fills ``num_pages`` full blocks and is freed, leaving the
+    free queue in the freed (LRU) order ``[N, N-1, ..., 1]`` with every page
+    carrying a prefix-cache hash.
+    """
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, num_pages + 1),
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=block_size,
+        **kwargs,
+    )
+    num_tokens = num_pages * block_size
+    seed = make_request("seed", list(range(num_tokens)), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(seed)
+    manager.allocate_slots(seed, num_tokens, 0, computed)
+    manager.free(seed)
+    return manager
+
+
+def _free_ids(manager: KVCacheManager) -> list[int]:
+    return [
+        b.block_id for b in manager.block_pool.free_block_queue.get_all_free_blocks()
+    ]
+
+
+def test_soft_retention_eviction_order():
+    # Free cached LRU order [5, 4, 3, 2, 1]; retaining {4, 2} must select
+    # every non-retained page first and fall back to the retained ones in
+    # their original queue order: A C E B D.
+    manager = _seed_fully_cached_free_queue(5)
+    pool = manager.block_pool
+    assert _free_ids(manager) == [5, 4, 3, 2, 1]
+    hint = BlockRetentionHint(lambda: {4, 2})
+    allocated = [pool.get_new_blocks(1, hint)[0].block_id for _ in range(5)]
+    assert allocated == [5, 3, 1, 4, 2]
+    assert pool.free_block_queue.num_free_blocks == 0
+
+
+def test_soft_retention_falls_back():
+    # Only 3 non-retained free pages exist; requesting 4 must still succeed
+    # by consuming the retained pages in original queue order.
+    manager = _seed_fully_cached_free_queue(5)
+    hint = BlockRetentionHint(lambda: {4, 2})
+    blocks = manager.block_pool.get_new_blocks(4, hint)
+    assert [b.block_id for b in blocks] == [5, 3, 1, 4]
+
+    # Retaining every free page never blocks an allocation.
+    manager = _seed_fully_cached_free_queue(5)
+    hint = BlockRetentionHint(lambda: {1, 2, 3, 4, 5})
+    blocks = manager.block_pool.get_new_blocks(5, hint)
+    assert [b.block_id for b in blocks] == [5, 4, 3, 2, 1]
+
+
+def test_soft_retention_preserves_unselected_order():
+    block_size = 16
+    # Seed 5 cached pages in a 7-page pool: the free queue mixes the two
+    # never-used unhashed pages at the head with the cached LRU region.
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 8),
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    num_tokens = 5 * block_size
+    seed = make_request("seed", list(range(num_tokens)), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(seed)
+    manager.allocate_slots(seed, num_tokens, 0, computed)
+    manager.free(seed)
+    assert _free_ids(manager) == [6, 7, 5, 4, 3, 2, 1]
+
+    # Retention only applies to hashed blocks: the unhashed head page 6 is
+    # selected even though its ID is in the retained set.
+    hint = BlockRetentionHint(lambda: {6, 4, 2})
+    blocks = manager.block_pool.get_new_blocks(5, hint)
+    assert [b.block_id for b in blocks] == [6, 7, 5, 3, 1]
+    # Every unselected page keeps its relative order and the queue stays
+    # consistently linked.
+    assert _free_ids(manager) == [4, 2]
+    assert manager.block_pool.free_block_queue.num_free_blocks == 2
+
+
+def test_soft_retention_ignores_active_and_null_ids():
+    block_size = 16
+    # Seed 5 cached pages in a 7-page pool so the active request does not
+    # consume the cached head.
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 8),
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    num_tokens = 5 * block_size
+    seed = make_request("seed", list(range(num_tokens)), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(seed)
+    manager.allocate_slots(seed, num_tokens, 0, computed)
+    manager.free(seed)
+    assert _free_ids(manager) == [6, 7, 5, 4, 3, 2, 1]
+
+    pool = manager.block_pool
+    # Keep one page actively referenced (not in the free queue).
+    active = make_request(
+        "active", list(range(600, 600 + block_size)), block_size, sha256
+    )
+    computed, _, _ = manager.get_computed_blocks(active)
+    manager.allocate_slots(active, block_size, 0, computed)
+    active_id = manager.get_blocks("active").get_block_ids()[0][0]
+    null_id = pool.null_block.block_id
+    assert _free_ids(manager) == [7, 5, 4, 3, 2, 1]
+
+    hint = BlockRetentionHint(lambda: {active_id, null_id, 2})
+    blocks = pool.get_new_blocks(1, hint)
+    assert blocks[0].block_id == 7
+    # Force the full fallback: only free pages are ever consumed.
+    blocks.extend(pool.get_new_blocks(5, hint))
+    assert sorted(b.block_id for b in blocks) == [1, 2, 3, 4, 5, 7]
+    # The active and null pages are untouched.
+    assert pool.blocks[active_id].ref_cnt == 1
+    assert pool.blocks[active_id].block_hash is not None
+    assert pool.null_block.block_hash is None
+    assert pool.free_block_queue.num_free_blocks == 0
+
+
+def test_retention_disabled_is_exact_lru():
+    # Without a retention hint the allocation order, eviction events and
+    # hash-map updates match the frozen LRU baseline exactly.
+    manager = _seed_fully_cached_free_queue(5, enable_kv_cache_events=True)
+    pool = manager.block_pool
+    blocks = pool.get_new_blocks(5)
+    assert [b.block_id for b in blocks] == [5, 4, 3, 2, 1]
+    assert len(pool.cached_block_hash_to_block) == 0
+    events = pool.take_events()
+    removed = [e for e in events if isinstance(e, BlockRemoved)]
+    assert sum(len(e.block_hashes) for e in removed) == 5
+
+
+def test_retention_resolver_not_called_on_uncached_fast_path():
+    block_size = 16
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 6),
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    pool = manager.block_pool
+    calls = []
+
+    def resolver() -> set[int]:
+        calls.append(1)
+        return set()
+
+    hint = BlockRetentionHint(resolver)
+    # All free pages are unhashed: the waiting-demand resolver must never run.
+    blocks = pool.get_new_blocks(3, hint)
+    assert len(blocks) == 3
+    assert calls == []
+    pool.free_blocks(blocks)
+
+    req = make_request("0", list(range(2 * block_size)), block_size, sha256)
+    out = manager.allocate_slots(req, 2 * block_size, retention_resolver=resolver)
+    assert out is not None
+    assert calls == []
+
+
+def test_retention_resolver_called_once_per_allocation():
+    block_size = 16
+    manager = _seed_fully_cached_free_queue(6)
+    calls = []
+
+    def resolver() -> set[int]:
+        calls.append(1)
+        # Includes a block that is active (touched) by this very allocation:
+        # active IDs are not in the free queue and must simply be ignored.
+        return {3}
+
+    # One allocate_slots transaction with a local hit plus external computed
+    # tokens drives two BlockPool.get_new_blocks calls (external-computed
+    # adoption and new blocks); the resolver must run exactly once.
+    prompt = list(range(4 * block_size)) + [500] * block_size + [600] * block_size
+    req = make_request("0", prompt, block_size, sha256)
+    computed, num_computed, _ = manager.get_computed_blocks(req)
+    assert num_computed == 4 * block_size
+    out = manager.allocate_slots(
+        req,
+        block_size,  # new tokens
+        num_computed,
+        computed,  # local hit blocks
+        0,  # lookahead
+        block_size,  # external computed tokens
+        retention_resolver=resolver,
+    )
+    assert out is not None
+    assert calls == [1]
+
+
+def test_prefix_peek_is_read_only():
+    block_size = 16
+    manager = _seed_fully_cached_free_queue(5)
+    pool = manager.block_pool
+    # 4 prompt blocks: the num_tokens - 1 cap yields a 3-block hit.
+    req = make_request("0", list(range(4 * block_size)), block_size, sha256)
+
+    free_before = _free_ids(manager)
+    refcnt_before = [b.ref_cnt for b in pool.blocks]
+    hash_map_size_before = len(pool.cached_block_hash_to_block)
+    events_before = len(pool.kv_event_queue)
+    boundary_before = req.shared_prefix_boundary
+
+    peeked_blocks, peeked_tokens = manager.peek_computed_blocks(req)
+
+    assert _free_ids(manager) == free_before
+    assert [b.ref_cnt for b in pool.blocks] == refcnt_before
+    assert len(pool.cached_block_hash_to_block) == hash_map_size_before
+    assert len(pool.kv_event_queue) == events_before
+    assert req.shared_prefix_boundary == boundary_before
+
+    # Peek returns exactly what a real admission lookup would hit.
+    real_blocks, real_tokens, _ = manager.get_computed_blocks(req)
+    assert peeked_tokens == real_tokens == 3 * block_size
+    assert peeked_blocks.get_block_ids() == real_blocks.get_block_ids()
+    assert peeked_blocks.get_block_ids() == ([1, 2, 3],)
+
+
+def test_prefix_peek_full_report_emits_no_event():
+    block_size = 16
+    manager = _seed_fully_cached_free_queue(5, enable_kv_cache_events=True)
+    manager.take_events()  # drain the seed BlockStored events
+    req = make_request(
+        "0",
+        list(range(4 * block_size)),
+        block_size,
+        sha256,
+        extra_args={"kv_cache_report_mode": "full"},
+    )
+    assert req.kv_cache_report_mode == "full"
+
+    manager.peek_computed_blocks(req)
+    assert manager.take_events() == []
+
+    # The real admission path still emits full-report reuse events.
+    _, num_tokens, _ = manager.get_computed_blocks(req)
+    assert num_tokens == 3 * block_size
+    events = manager.take_events()
+    assert events
+    assert all(isinstance(e, BlockStored) for e in events)
+
+
+def test_prefix_peek_does_not_touch_connector():
+    block_size = 16
+    manager = _seed_fully_cached_free_queue(5)
+    req = make_request("0", list(range(4 * block_size)), block_size, sha256)
+    # The connector-facing admission lookups must not be consulted by peek.
+    with (
+        patch.object(
+            manager,
+            "get_computed_blocks",
+            side_effect=AssertionError("peek must not use get_computed_blocks"),
+        ),
+        patch.object(
+            manager,
+            "get_computed_blocks_for_connector",
+            side_effect=AssertionError(
+                "peek must not use get_computed_blocks_for_connector"
+            ),
+        ),
+    ):
+        blocks, num_tokens = manager.peek_computed_blocks(req)
+    assert num_tokens == 3 * block_size
+    assert blocks.get_block_ids() == ([1, 2, 3],)
+
+
+def test_retained_eviction_uses_official_accounting():
+    manager = _seed_fully_cached_free_queue(2, enable_kv_cache_events=True)
+    manager.take_events()  # drain the seed BlockStored events
+    pool = manager.block_pool
+
+    # Both free pages are retained, so the allocation falls back to them:
+    # the official eviction path must still run exactly once per page.
+    hint = BlockRetentionHint(lambda: {1, 2})
+    blocks = pool.get_new_blocks(2, hint)
+    assert sorted(b.block_id for b in blocks) == [1, 2]
+    assert len(pool.cached_block_hash_to_block) == 0
+    for block in blocks:
+        assert block.block_hash is None
+        assert block.ref_cnt == 1
+    removed = [e for e in pool.take_events() if isinstance(e, BlockRemoved)]
+    assert sum(len(e.block_hashes) for e in removed) == 2

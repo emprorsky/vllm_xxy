@@ -19,6 +19,7 @@
 
 import asyncio
 import json
+import os
 import random
 import sys
 import time
@@ -28,12 +29,14 @@ import aiohttp
 API = "http://localhost:8000"
 MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
-# ---- 场景参数 ----
-NUM_PREFIX_POOLS = 8          # 共享前缀池数量
+# ---- 场景参数（可用环境变量覆盖，便于 A/B 不同压力形态）----
+NUM_PREFIX_POOLS = int(os.environ.get("BENCH_PREFIX_POOLS", 8))   # 共享前缀池数量
 PREFIX_TOKENS = 900           # 每个 system prompt 约 900 token
-SHARED_RATIO = 0.7            # 70% 请求使用共享前缀（30% 用独享前缀，制造对比）
-CONCURRENCY = 48             # 并发数（压满 KV cache）
-TOTAL_REQUESTS = 192          # 总请求数
+SHARED_RATIO = float(os.environ.get("BENCH_SHARED_RATIO", 0.7))   # 共享前缀请求比例
+CONCURRENCY = int(os.environ.get("BENCH_CONCURRENCY", 48))       # 并发数（压满 KV cache）
+TOTAL_REQUESTS = int(os.environ.get("BENCH_TOTAL_REQUESTS", 192))  # 总请求数
+POOL_MODE = os.environ.get("BENCH_POOL_MODE", "random")  # random=随机选池 / cyclic=轮转扫描
+GROUP_SIZE = int(os.environ.get("BENCH_GROUP_SIZE", 8))  # cyclic 模式下每池连续请求数
 OUTPUT_LENS = [512, 1024, 1536]  # 混合输出长度（偏长，制造解码期 KV 膨胀→抢占）
 RNG_SEED = 42
 
@@ -54,7 +57,13 @@ UNIQUE_PREFIX = "以下是一次性独立任务的上下文，不与其他请求
 
 def build_prompt(req_id: int) -> tuple[str, int]:
     """返回 (prompt, prefix_pool_id)；-1 表示独享前缀"""
-    if random.random() < SHARED_RATIO:
+    if POOL_MODE == "cyclic":
+        # 循环/扫描型负载：每 BENCH_GROUP_SIZE 个连续请求用同一个池，
+        # 池编号随请求推进轮转。LRU 的经典失效场景——某池被再次需要时
+        # 恰好位于 LRU 队尾。
+        pid = (req_id // GROUP_SIZE) % NUM_PREFIX_POOLS
+        prefix = SHARED_PREFIXES[pid]
+    elif random.random() < SHARED_RATIO:
         pid = random.randrange(NUM_PREFIX_POOLS)
         prefix = SHARED_PREFIXES[pid]
     else:

@@ -21,6 +21,7 @@ logger = init_logger(__name__)
 RunnerType = Literal["generate", "pooling", "draft"]
 SchedulerPolicy = Literal["fcfs", "priority"]
 PreemptionPolicy = Literal["default", "recompute_aware"]
+PrefixCacheEvictionPolicy = Literal["lru", "waiting_queue_aware"]
 
 
 @config
@@ -106,15 +107,33 @@ class SchedulerConfig:
       value means earlier handling) and time of arrival deciding any ties)."""
 
     preemption_policy: PreemptionPolicy = "default"
-    """The preemption victim selection policy to use when the KV cache is
+    """The preemption and re-admission policy to use when the KV cache is
     exhausted:
 
     - "default" preserves the baseline behavior (FCFS preempts the newest
       running request; priority scheduling preempts the lowest user priority).
     - "recompute_aware" first restricts victims to the worst user-priority
-      tier (priority is a hard constraint), then picks the request with the
-      smallest recompute cost (num_computed_tokens) within that tier,
-      minimizing wasted compute on re-admission."""
+      tier (priority is a hard constraint), protects requests that have
+      already been preempted, and then minimizes recompute cost within that
+      tier. In priority scheduling, preempted requests are also re-admitted
+      before fresh requests in the same user-priority tier."""
+
+    prefix_cache_eviction_policy: PrefixCacheEvictionPolicy = "lru"
+    """The eviction preference applied when allocating blocks that may evict
+    cached prefix-cache pages:
+
+    - "lru" preserves the baseline behavior (free pages are taken strictly in
+      free-queue order).
+    - "waiting_queue_aware" applies soft retention: when selecting free
+      blocks, pages that would be hit by the near-head waiting requests are
+      avoided in favor of other free pages, falling back to them in the
+      original order when required. Retention is a preference only; it never
+      changes allocation feasibility, admission order, or refcounts."""
+
+    kv_aware_candidate_window: int = Field(default=16, ge=1)
+    """Upper bound on the number of near-head waiting requests probed for
+    prefix-cache demand when ``prefix_cache_eviction_policy`` is
+    "waiting_queue_aware" (and reused by later kv-aware admission features)."""
 
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to

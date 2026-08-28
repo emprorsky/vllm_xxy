@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import itertools
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -15,6 +16,7 @@ from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
     BlockHash,
     BlockHashWithGroupId,
+    BlockRetentionHint,
     ExternalBlockHash,
     FreeKVCacheBlockQueue,
     KVCacheBlock,
@@ -644,13 +646,23 @@ class BlockPool:
             # `num_tokens` only applies to the first (primary) insertion.
             self._insert_block_hash(block_hash, dst_block, num_tokens=num_tokens)
 
-    def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
+    def get_new_blocks(
+        self,
+        num_blocks: int,
+        retention_hint: BlockRetentionHint | None = None,
+    ) -> list[KVCacheBlock]:
         """Get new blocks from the free block pool.
 
         Note that we do not check block cache in this function.
 
         Args:
             num_blocks: The number of blocks to allocate.
+            retention_hint: Optional allocation-scoped hint of block IDs to
+                retain when possible. It is only consulted when this
+                allocation could actually evict cached pages (i.e., caching is
+                enabled and one of the first ``num_blocks`` free candidates
+                carries a hash); the hint resolver is never called on the
+                uncached fast path.
 
         Returns:
             A list of new block.
@@ -658,7 +670,23 @@ class BlockPool:
         if num_blocks > self.get_num_free_blocks():
             raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
 
-        ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
+        if retention_hint is None or not self.enable_caching:
+            ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
+        else:
+            cached_eviction_possible = any(
+                block.block_hash is not None
+                for block in itertools.islice(
+                    self.free_block_queue.iter_blocks_after(None), num_blocks
+                )
+            )
+            if cached_eviction_possible:
+                retained_ids = retention_hint.resolve()
+                ret = self.free_block_queue.popleft_n_avoiding(num_blocks, retained_ids)
+            else:
+                # The first num_blocks free pages are unhashed, so this
+                # allocation cannot evict a cached block: keep the fast path
+                # without resolving waiting-queue demand.
+                ret = self.free_block_queue.popleft_n(num_blocks)
 
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:

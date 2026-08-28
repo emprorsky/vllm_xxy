@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import heapq
 import itertools
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Any
 
@@ -199,9 +200,9 @@ class Scheduler(SchedulerInterface):
             self.policy, self.scheduler_config.preemption_policy
         )
         # Priority queues for requests.
-        self.waiting = create_request_queue(self.policy)
+        self.waiting = self._create_waiting_queue()
         # requests skipped in waiting flow due async deps or constraints.
-        self.skipped_waiting = create_request_queue(self.policy)
+        self.skipped_waiting = self._create_waiting_queue()
         self.running: list[Request] = []
 
         # The request IDs that are finished in between the previous and the
@@ -661,6 +662,7 @@ class Scheduler(SchedulerInterface):
                         request,
                         num_new_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
+                        retention_resolver=self._make_waiting_demand_retention_resolver(),
                     )
 
                     if new_blocks is not None:
@@ -781,7 +783,7 @@ class Scheduler(SchedulerInterface):
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
-            step_skipped_waiting = create_request_queue(self.policy)
+            step_skipped_waiting = self._create_waiting_queue()
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
                 if input_budget <= draft_slots:
@@ -1077,6 +1079,9 @@ class Scheduler(SchedulerInterface):
                     full_sequence_must_fit=self.scheduler_reserve_full_isl,
                     reserved_blocks=reserved_blocks,
                     has_scheduled_reqs=bool(self.running),
+                    retention_resolver=self._make_waiting_demand_retention_resolver(
+                        exclude=request
+                    ),
                 )
 
                 if new_blocks is None:
@@ -2208,17 +2213,100 @@ class Scheduler(SchedulerInterface):
         else:
             self.waiting.add_request(request)
 
+    def _create_waiting_queue(self) -> RequestQueue:
+        return create_request_queue(
+            self.policy,
+            self.decision_policy.waiting_order_key,
+        )
+
     def _select_waiting_queue_for_scheduling(self) -> RequestQueue | None:
         if self.policy == SchedulingPolicy.FCFS:
             return self.skipped_waiting or self.waiting or None
 
         # PRIORITY mode: compare queue heads when both queues are non-empty.
         if self.waiting and self.skipped_waiting:
-            waiting_req = self.waiting.peek_request()
-            skipped_req = self.skipped_waiting.peek_request()
-            return self.waiting if waiting_req < skipped_req else self.skipped_waiting
+            return (
+                self.waiting
+                if self.waiting.peek_order_key() < self.skipped_waiting.peek_order_key()
+                else self.skipped_waiting
+            )
 
         return self.waiting or self.skipped_waiting or None
+
+    def _iter_waiting_demand_candidates(self, window: int) -> list[Request]:
+        """Bounded near-head waiting requests in true scheduling order.
+
+        Mirrors ``_select_waiting_queue_for_scheduling``: FCFS scans
+        ``skipped_waiting`` then ``waiting``; PRIORITY merges both queues by
+        the shared order key. Requests that cannot use the local prefix cache
+        at admission (KVTransfer resumes, blocked statuses) are skipped.
+        Never mutates the queues and never scans beyond ``window`` requests.
+        """
+        if window <= 0:
+            return []
+
+        if self.policy == SchedulingPolicy.FCFS:
+            candidates: list[Request] = []
+            for queue in (self.skipped_waiting, self.waiting):
+                remaining = window - len(candidates)
+                if remaining <= 0:
+                    break
+                candidates.extend(queue.peek_n(remaining))
+        else:
+            order_key = self.decision_policy.waiting_order_key
+            # (key, source_tag) is totally ordered without comparing Requests.
+            skipped = [
+                (order_key(req), 0, req) for req in self.skipped_waiting.peek_n(window)
+            ]
+            waiting = [(order_key(req), 1, req) for req in self.waiting.peek_n(window)]
+            candidates = [
+                req
+                for _, _, req in itertools.islice(heapq.merge(skipped, waiting), window)
+            ]
+
+        return [
+            req
+            for req in candidates
+            if req.num_computed_tokens == 0
+            and not self._is_blocked_waiting_status(req.status)
+        ]
+
+    def _make_waiting_demand_retention_resolver(
+        self,
+        exclude: Request | None = None,
+    ) -> Callable[[], set[int]] | None:
+        """Lazy resolver of near-head waiting prefix-cache demand.
+
+        Returns None unless waiting-queue-aware prefix retention is enabled.
+        The returned closure probes at most ``kv_aware_candidate_window``
+        near-head waiting requests with the read-only local prefix peek and
+        unions their hit blocks' physical IDs. It never mutates queues or
+        requests, and is resolved at most once per allocation transaction
+        (memoized by ``BlockRetentionHint``).
+        """
+        if self.scheduler_config.prefix_cache_eviction_policy != "waiting_queue_aware":
+            return None
+
+        kv_cache_manager = self.kv_cache_manager
+        window = self.scheduler_config.kv_aware_candidate_window
+
+        def resolver() -> set[int]:
+            retained_ids: set[int] = set()
+            for candidate in self._iter_waiting_demand_candidates(window):
+                if candidate is exclude:
+                    # The request being allocated has its real hit blocks
+                    # adopted (touched) inside this same allocation.
+                    continue
+                blocks, _ = kv_cache_manager.peek_computed_blocks(candidate)
+                for group_blocks in blocks.blocks:
+                    retained_ids.update(
+                        block.block_id
+                        for block in group_blocks
+                        if block.block_id is not None
+                    )
+            return retained_ids
+
+        return resolver
 
     def _handle_stopped_request(self, request: Request) -> bool:
         """Return True if finished (can be False for resumable requests)."""
