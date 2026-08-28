@@ -17,6 +17,7 @@ from vllm.v1.core.kv_cache_utils import (
     BlockHash,
     BlockHashWithGroupId,
     BlockRetentionHint,
+    BlockRetentionTier,
     ExternalBlockHash,
     FreeKVCacheBlockQueue,
     KVCacheBlock,
@@ -682,17 +683,26 @@ class BlockPool:
                 block.block_hash is not None for block in lru_candidates
             )
             if cached_eviction_possible:
-                retained_ids = retention_hint.resolve()
-                ret = self.free_block_queue.popleft_n_avoiding(num_blocks, retained_ids)
+                retention_tiers = retention_hint.resolve()
+                ret = self.free_block_queue.popleft_n_by_retention_tier(
+                    num_blocks, retention_tiers
+                )
                 selected_ids = {block.block_id for block in ret}
                 avoided_evictions = sum(
                     block.block_hash is not None
-                    and block.block_id in retained_ids
+                    and retention_tiers.get(
+                        block.block_id, BlockRetentionTier.NONE
+                    )
+                    > BlockRetentionTier.NONE
                     and block.block_id not in selected_ids
                     for block in lru_candidates
                 )
                 fallback_blocks = sum(
-                    block.block_hash is not None and block.block_id in retained_ids
+                    block.block_hash is not None
+                    and retention_tiers.get(
+                        block.block_id, BlockRetentionTier.NONE
+                    )
+                    > BlockRetentionTier.NONE
                     for block in ret
                 )
                 retention_hint.record_selection(

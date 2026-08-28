@@ -21,7 +21,9 @@ logger = init_logger(__name__)
 RunnerType = Literal["generate", "pooling", "draft"]
 SchedulerPolicy = Literal["fcfs", "priority"]
 PreemptionPolicy = Literal["default", "recompute_aware"]
-PrefixCacheEvictionPolicy = Literal["lru", "waiting_queue_aware"]
+PrefixCacheEvictionPolicy = Literal[
+    "lru", "waiting_queue_aware", "priority_aware"
+]
 AdmissionPolicy = Literal["default", "cache_affinity"]
 
 
@@ -129,12 +131,17 @@ class SchedulerConfig:
       blocks, pages that would be hit by the near-head waiting requests are
       avoided in favor of other free pages, falling back to them in the
       original order when required. Retention is a preference only; it never
-      changes allocation feasibility, admission order, or refcounts."""
+      changes allocation feasibility, admission order, or refcounts.
+    - "priority_aware" additionally tiers near-head demand as normal,
+      resumed, or relatively high user priority. Lower tiers are evicted
+      first and each tier preserves LRU order, with fallback through every
+      tier to keep allocation feasibility unchanged."""
 
     kv_aware_candidate_window: int = Field(default=8, ge=1)
     """Upper bound on the number of near-head waiting requests probed for
     prefix-cache demand when ``prefix_cache_eviction_policy`` is
-    "waiting_queue_aware" (and reused by later kv-aware admission features)."""
+    "waiting_queue_aware" or "priority_aware" (and reused by later kv-aware
+    admission features)."""
 
     admission_policy: AdmissionPolicy = "default"
     """The waiting-request admission policy:

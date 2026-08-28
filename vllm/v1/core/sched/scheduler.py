@@ -38,7 +38,7 @@ from vllm.v1.core.encoder_cache_manager import (
 )
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
-from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.core.kv_cache_utils import BlockRetentionTier, KVCacheBlock
 from vllm.v1.core.sched.feature_context import (
     LocalPrefixFeature,
     SchedulingFeatureContext,
@@ -319,7 +319,7 @@ class Scheduler(SchedulerInterface):
         use_scheduling_features = (
             self.scheduler_config.admission_policy == "cache_affinity"
             or self.scheduler_config.prefix_cache_eviction_policy
-            == "waiting_queue_aware"
+            in ("waiting_queue_aware", "priority_aware")
         )
         self.scheduling_feature_context = (
             SchedulingFeatureContext(
@@ -2480,47 +2480,78 @@ class Scheduler(SchedulerInterface):
     def _make_waiting_demand_retention_resolver(
         self,
         exclude: Request | None = None,
-    ) -> Callable[[], set[int]] | None:
+    ) -> Callable[[], dict[int, BlockRetentionTier]] | None:
         """Lazy resolver of near-head waiting prefix-cache demand.
 
-        Returns None unless waiting-queue-aware prefix retention is enabled.
+        Returns None unless a waiting-demand prefix-retention policy is enabled.
         The returned closure probes at most ``kv_aware_candidate_window``
         near-head waiting requests with the read-only local prefix peek and
         unions their hit blocks' physical IDs. It never mutates queues or
         requests, and is resolved at most once per allocation transaction
         (memoized by ``BlockRetentionHint``).
         """
-        if self.scheduler_config.prefix_cache_eviction_policy != "waiting_queue_aware":
+        retention_policy = self.scheduler_config.prefix_cache_eviction_policy
+        if retention_policy not in ("waiting_queue_aware", "priority_aware"):
             return None
 
         feature_context = self.scheduling_feature_context
         assert feature_context is not None
         window = self.scheduler_config.kv_aware_candidate_window
 
-        def resolver() -> set[int]:
+        def resolver() -> dict[int, BlockRetentionTier]:
             stats = self.kv_retention_stats
             stats.resolver_calls += 1
-            retained_ids: set[int] = set()
             candidates = self._iter_waiting_demand_candidates(window)
             stats.candidates += len(candidates)
-            for candidate in candidates:
-                if candidate is exclude:
-                    # The request being allocated has its real hit blocks
-                    # adopted (touched) inside this same allocation.
-                    continue
+            retained_candidates = [
+                candidate for candidate in candidates if candidate is not exclude
+            ]
+            has_priority_distinction = (
+                retention_policy == "priority_aware"
+                and self.policy == SchedulingPolicy.PRIORITY
+                and len({candidate.priority for candidate in retained_candidates}) > 1
+            )
+            best_priority = (
+                min(candidate.priority for candidate in retained_candidates)
+                if has_priority_distinction
+                else None
+            )
+            retention_tiers: dict[int, BlockRetentionTier] = {}
+            for candidate in retained_candidates:
+                if retention_policy == "waiting_queue_aware":
+                    tier = BlockRetentionTier.NORMAL
+                elif candidate.priority == best_priority:
+                    tier = BlockRetentionTier.HIGH_PRIORITY
+                elif feature_context.cheap(candidate).is_resumed:
+                    tier = BlockRetentionTier.RESUMED
+                else:
+                    tier = BlockRetentionTier.NORMAL
                 prefix, _ = feature_context.local_prefix(candidate)
                 blocks = prefix.blocks
                 num_computed_tokens = prefix.cached_tokens
                 if num_computed_tokens > 0:
                     stats.candidates_with_hits += 1
                 for group_blocks in blocks.blocks:
-                    retained_ids.update(
-                        block.block_id
-                        for block in group_blocks
-                        if block.block_id is not None
-                    )
-            stats.blocks += len(retained_ids)
-            return retained_ids
+                    for block in group_blocks:
+                        block_id = block.block_id
+                        if block_id is not None:
+                            retention_tiers[block_id] = max(
+                                retention_tiers.get(
+                                    block_id, BlockRetentionTier.NONE
+                                ),
+                                tier,
+                            )
+            tier_counts = {
+                tier: sum(value == tier for value in retention_tiers.values())
+                for tier in BlockRetentionTier
+            }
+            stats.blocks += len(retention_tiers)
+            stats.normal_blocks += tier_counts[BlockRetentionTier.NORMAL]
+            stats.resumed_blocks += tier_counts[BlockRetentionTier.RESUMED]
+            stats.high_priority_blocks += tier_counts[
+                BlockRetentionTier.HIGH_PRIORITY
+            ]
+            return retention_tiers
 
         return resolver
 

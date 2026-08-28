@@ -513,6 +513,12 @@ def test_prefix_cache_default():
     assert engine_args.admission_policy == "cache_affinity"
     assert engine_args.kv_aware_aging_threshold_s == 5.0
 
+    args = parser.parse_args(
+        ["--prefix-cache-eviction-policy", "priority_aware"]
+    )
+    engine_args = EngineArgs.from_cli_args(args=args)
+    assert engine_args.prefix_cache_eviction_policy == "priority_aware"
+
 
 def test_prefix_cache_retention_interval_from_deprecated_env(
     monkeypatch, caplog, disable_log_dedup

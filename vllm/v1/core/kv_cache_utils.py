@@ -7,8 +7,9 @@ import hashlib
 import math
 import os
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from enum import IntEnum
 from functools import partial
 from typing import Any, NamedTuple, NewType, TypeAlias, overload
 
@@ -225,30 +226,38 @@ class KVCacheBlockCopy(NamedTuple):
     dst_block_id: int
 
 
+class BlockRetentionTier(IntEnum):
+    """Near-term waiting demand for one cached physical block."""
+
+    NONE = 0
+    NORMAL = 1
+    RESUMED = 2
+    HIGH_PRIORITY = 3
+
+
 class BlockRetentionHint:
-    """Allocation-scoped lazy hint of block IDs to retain when possible.
+    """Allocation-scoped lazy retention tiers for cached block IDs.
 
     Wraps a resolver callable so the demand scan runs at most once per
     allocation transaction, and only when the block pool is about to evict
     cached pages. The resolver must be read-only with respect to the block
-    pool and must return the union of physical block IDs that near-term
-    requests could hit in the prefix cache.
+    pool. Higher tiers represent more valuable near-term waiting demand.
     """
 
     def __init__(
         self,
-        resolver: Callable[[], set[int]],
+        resolver: Callable[[], Mapping[int, BlockRetentionTier]],
         selection_observer: Callable[[int, int], None] | None = None,
     ) -> None:
         self._resolver = resolver
         self._selection_observer = selection_observer
-        self._ids: set[int] | None = None
+        self._tiers: Mapping[int, BlockRetentionTier] | None = None
 
-    def resolve(self) -> set[int]:
-        """Resolve (and memoize) the retained block IDs."""
-        if self._ids is None:
-            self._ids = self._resolver()
-        return self._ids
+    def resolve(self) -> Mapping[int, BlockRetentionTier]:
+        """Resolve and memoize physical block retention tiers."""
+        if self._tiers is None:
+            self._tiers = self._resolver()
+        return self._tiers
 
     def record_selection(self, avoided_evictions: int, fallback_blocks: int) -> None:
         """Record how the hint changed a physical block selection."""
@@ -378,23 +387,25 @@ class FreeKVCacheBlockQueue:
             curr_block.prev_free_block = self.fake_free_list_head
         return ret
 
-    def popleft_n_avoiding(self, n: int, retained_ids: set[int]) -> list[KVCacheBlock]:
-        """Pop the first n free blocks, avoiding retained blocks when possible.
+    def popleft_n_by_retention_tier(
+        self,
+        n: int,
+        retention_tiers: Mapping[int, BlockRetentionTier],
+    ) -> list[KVCacheBlock]:
+        """Pop the lowest-retention free blocks, preserving tier-local LRU.
 
-        Scans free blocks from the head, skipping blocks whose IDs are in
-        ``retained_ids`` (retention only applies to blocks that carry a
-        prefix-cache hash) until n blocks are found or the queue is exhausted.
-        Skipped retained blocks are then consumed as fallback in their
-        original queue order, so the allocation never fails while free blocks
-        remain. Every unselected block stays in the queue with its relative
-        order and links unchanged.
+        Unhashed or unmentioned blocks are tier 0. If tier 0 cannot satisfy the
+        allocation, tiers 1 through 3 are consumed in order. Every tier keeps
+        the original free-queue LRU order, every unselected block keeps its
+        relative order and links, and fallback through all tiers guarantees
+        that retention never changes allocation feasibility.
 
         Args:
             n: The number of blocks to pop.
-            retained_ids: Block IDs to avoid when possible.
+            retention_tiers: Retention tier keyed by physical block ID.
 
         Returns:
-            A list of n free blocks, non-retained ones first.
+            A list of n free blocks, lowest retention tier first.
         """
         if n == 0:
             return []
@@ -402,27 +413,37 @@ class FreeKVCacheBlockQueue:
         self.num_free_blocks -= n
 
         selected: list[KVCacheBlock] = []
-        retained: list[KVCacheBlock] = []
+        retained: dict[BlockRetentionTier, list[KVCacheBlock]] = {
+            tier: []
+            for tier in BlockRetentionTier
+            if tier != BlockRetentionTier.NONE
+        }
         block = self.fake_free_list_head.next_free_block
         while len(selected) < n and block is not self.fake_free_list_tail:
             assert block is not None
-            if block.block_id in retained_ids and block.block_hash is not None:
-                retained.append(block)
-            else:
+            tier = (
+                retention_tiers.get(block.block_id, BlockRetentionTier.NONE)
+                if block.block_hash is not None
+                else BlockRetentionTier.NONE
+            )
+            if tier == BlockRetentionTier.NONE:
                 selected.append(block)
+            else:
+                retained[tier].append(block)
             block = block.next_free_block
 
         if len(selected) < n:
-            # Fallback: consume retained blocks in original queue order.
-            # The scan reached the tail, so every free block was visited and
-            # selected + retained covers the whole queue.
-            needed = n - len(selected)
-            selected.extend(retained[:needed])
-            del retained[:needed]
+            for tier in BlockRetentionTier:
+                if tier == BlockRetentionTier.NONE:
+                    continue
+                needed = n - len(selected)
+                selected.extend(retained[tier][:needed])
+                if len(selected) == n:
+                    break
             assert len(selected) == n
 
-        # Unlink every chosen block in place; unchosen blocks (skipped
-        # retained blocks and the unvisited tail) keep their relative order.
+        # Unlink every chosen block in place. Unchosen blocks keep their
+        # relative order, regardless of tier.
         for block in selected:
             block.prev_free_block.next_free_block = block.next_free_block
             block.next_free_block.prev_free_block = block.prev_free_block

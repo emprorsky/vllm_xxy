@@ -608,6 +608,11 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 "Number of inspected waiting requests with local prefix hits."
             ),
             "blocks": "Number of unique block IDs returned by retention resolvers.",
+            "normal_blocks": "Number of retained blocks with normal demand.",
+            "resumed_blocks": "Number of retained blocks with resumed demand.",
+            "high_priority_blocks": (
+                "Number of retained blocks with relatively high-priority demand."
+            ),
             "avoided_evictions": (
                 "Number of retained LRU candidates skipped during allocation."
             ),

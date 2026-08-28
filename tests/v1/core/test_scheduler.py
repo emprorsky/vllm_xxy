@@ -31,7 +31,11 @@ from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.utils.hashing import sha256
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
-from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
+from vllm.v1.core.kv_cache_utils import (
+    BlockRetentionTier,
+    get_request_block_hasher,
+    init_none_hash,
+)
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
 from vllm.v1.core.sched.request_queue import PriorityRequestQueue
 from vllm.v1.core.sched.scheduler import Scheduler
@@ -2579,6 +2583,7 @@ def create_scheduler_with_priority(
     use_v2_model_runner: bool | None = None,
     preemption_policy: PreemptionPolicy = "default",
     admission_policy: str = "default",
+    prefix_cache_eviction_policy: str = "lru",
     kv_aware_candidate_window: int = 8,
     kv_aware_aging_threshold_s: float = 30.0,
 ) -> Scheduler:
@@ -2614,6 +2619,7 @@ def create_scheduler_with_priority(
         policy="priority",  # Enable priority scheduling
         preemption_policy=preemption_policy,
         admission_policy=admission_policy,
+        prefix_cache_eviction_policy=prefix_cache_eviction_policy,
         kv_aware_candidate_window=kv_aware_candidate_window,
         kv_aware_aging_threshold_s=kv_aware_aging_threshold_s,
         # Ensure admission/preemption mechanics are deterministic
@@ -6746,3 +6752,89 @@ def test_feature_context_is_not_request_state():
     assert not hasattr(request, "local_prefix_feature")
     assert not hasattr(request, "scheduling_feature_context")
     assert not hasattr(request, "scheduling_feature_generation")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5a: priority/demand-aware prefix retention tiers.
+# ---------------------------------------------------------------------------
+
+
+def _seed_retention_prefix(scheduler: Scheduler, req_id: str, token: int) -> None:
+    seed = _make_retention_request(req_id, [token] * 48, max_tokens=1)
+    scheduler.add_request(seed)
+    output = scheduler.schedule()
+    scheduler.update_from_output(output, make_output(scheduler))
+    assert not scheduler.running
+
+
+def test_priority_retention_tiers_relative_user_priority():
+    scheduler = create_scheduler_with_priority(
+        enable_prefix_caching=True,
+        prefix_cache_eviction_policy="priority_aware",
+    )
+    for req_id, token in (("seed-normal", 10), ("seed-resumed", 20), ("seed-high", 30)):
+        _seed_retention_prefix(scheduler, req_id, token)
+
+    normal = _make_retention_request("normal", [10] * 48 + [110] * 16)
+    normal.priority = 5
+    resumed = _make_retention_request("resumed", [20] * 48 + [120] * 16)
+    resumed.priority = 5
+    resumed.num_preemptions = 1
+    high = _make_retention_request("high", [30] * 48 + [130] * 16)
+    high.priority = 0
+    for request in (normal, resumed, high):
+        scheduler.add_request(request)
+
+    resolver = scheduler._make_waiting_demand_retention_resolver()
+    assert resolver is not None
+    tiers = resolver()
+
+    def hit_ids(request: Request) -> set[int]:
+        context = scheduler.scheduling_feature_context
+        assert context is not None
+        feature, _ = context.local_prefix(request)
+        return {
+            block.block_id
+            for group in feature.blocks.blocks
+            for block in group
+            if block.block_id is not None
+        }
+
+    assert {tiers[block_id] for block_id in hit_ids(normal)} == {
+        BlockRetentionTier.NORMAL
+    }
+    assert {tiers[block_id] for block_id in hit_ids(resumed)} == {
+        BlockRetentionTier.RESUMED
+    }
+    assert {tiers[block_id] for block_id in hit_ids(high)} == {
+        BlockRetentionTier.HIGH_PRIORITY
+    }
+    assert scheduler.kv_retention_stats.normal_blocks == 3
+    assert scheduler.kv_retention_stats.resumed_blocks == 3
+    assert scheduler.kv_retention_stats.high_priority_blocks == 3
+
+
+def test_priority_retention_resume_promotes_shared_demand_under_fcfs():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        prefix_cache_eviction_policy="priority_aware",
+    )
+    _seed_retention_prefix(scheduler, "seed-shared", 40)
+    normal = _make_retention_request("normal", [40] * 48 + [140] * 16)
+    normal.priority = -10
+    resumed = _make_retention_request("resumed", [40] * 48 + [150] * 16)
+    resumed.priority = 10
+    resumed.num_preemptions = 1
+    scheduler.add_request(normal)
+    scheduler.add_request(resumed)
+
+    resolver = scheduler._make_waiting_demand_retention_resolver()
+    assert resolver is not None
+    tiers = resolver()
+
+    # FCFS does not interpret the Request priority field. Shared demand takes
+    # the maximum active tier, so resumed demand promotes all shared blocks.
+    assert set(tiers.values()) == {BlockRetentionTier.RESUMED}
+    assert scheduler.kv_retention_stats.normal_blocks == 0
+    assert scheduler.kv_retention_stats.resumed_blocks == 3
+    assert scheduler.kv_retention_stats.high_priority_blocks == 0

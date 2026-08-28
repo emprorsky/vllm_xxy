@@ -175,6 +175,9 @@ class KVRetentionStats:
     candidates: int = 0
     candidates_with_hits: int = 0
     blocks: int = 0
+    normal_blocks: int = 0
+    resumed_blocks: int = 0
+    high_priority_blocks: int = 0
     avoided_evictions: int = 0
     fallback_blocks: int = 0
 

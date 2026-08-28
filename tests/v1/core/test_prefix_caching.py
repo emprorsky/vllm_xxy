@@ -34,6 +34,7 @@ from vllm.v1.core.kv_cache_utils import (
     BlockHash,
     BlockHashWithGroupId,
     BlockRetentionHint,
+    BlockRetentionTier,
     KVCacheBlock,
     get_block_hash,
     get_group_id,
@@ -4387,7 +4388,10 @@ def test_soft_retention_eviction_order():
     assert _free_ids(manager) == [5, 4, 3, 2, 1]
     selections = []
     hint = BlockRetentionHint(
-        lambda: {4, 2},
+        lambda: {
+            4: BlockRetentionTier.NORMAL,
+            2: BlockRetentionTier.NORMAL,
+        },
         lambda avoided, fallback: selections.append((avoided, fallback)),
     )
     allocated = [pool.get_new_blocks(1, hint)[0].block_id for _ in range(5)]
@@ -4396,17 +4400,45 @@ def test_soft_retention_eviction_order():
     assert pool.free_block_queue.num_free_blocks == 0
 
 
+def test_tiered_retention_evicts_low_tiers_first_with_stable_lru():
+    manager = _seed_fully_cached_free_queue(6)
+    pool = manager.block_pool
+    assert _free_ids(manager) == [6, 5, 4, 3, 2, 1]
+    hint = BlockRetentionHint(
+        lambda: {
+            6: BlockRetentionTier.HIGH_PRIORITY,
+            5: BlockRetentionTier.NORMAL,
+            4: BlockRetentionTier.RESUMED,
+            3: BlockRetentionTier.NORMAL,
+            2: BlockRetentionTier.HIGH_PRIORITY,
+        }
+    )
+
+    blocks = pool.get_new_blocks(3, hint)
+
+    # Tier 0 first, then 1/2/3; original LRU is stable inside each tier.
+    assert [block.block_id for block in blocks] == [1, 5, 3]
+    assert _free_ids(manager) == [6, 4, 2]
+    blocks = pool.get_new_blocks(3, hint)
+    assert [block.block_id for block in blocks] == [4, 6, 2]
+    assert pool.free_block_queue.num_free_blocks == 0
+
+
 def test_soft_retention_falls_back():
     # Only 3 non-retained free pages exist; requesting 4 must still succeed
     # by consuming the retained pages in original queue order.
     manager = _seed_fully_cached_free_queue(5)
-    hint = BlockRetentionHint(lambda: {4, 2})
+    hint = BlockRetentionHint(
+        lambda: {4: BlockRetentionTier.NORMAL, 2: BlockRetentionTier.NORMAL}
+    )
     blocks = manager.block_pool.get_new_blocks(4, hint)
     assert [b.block_id for b in blocks] == [5, 3, 1, 4]
 
     # Retaining every free page never blocks an allocation.
     manager = _seed_fully_cached_free_queue(5)
-    hint = BlockRetentionHint(lambda: {1, 2, 3, 4, 5})
+    hint = BlockRetentionHint(
+        lambda: {block_id: BlockRetentionTier.NORMAL for block_id in range(1, 6)}
+    )
     blocks = manager.block_pool.get_new_blocks(5, hint)
     assert [b.block_id for b in blocks] == [5, 4, 3, 2, 1]
 
@@ -4430,7 +4462,13 @@ def test_soft_retention_preserves_unselected_order():
 
     # Retention only applies to hashed blocks: the unhashed head page 6 is
     # selected even though its ID is in the retained set.
-    hint = BlockRetentionHint(lambda: {6, 4, 2})
+    hint = BlockRetentionHint(
+        lambda: {
+            6: BlockRetentionTier.NORMAL,
+            4: BlockRetentionTier.NORMAL,
+            2: BlockRetentionTier.NORMAL,
+        }
+    )
     blocks = manager.block_pool.get_new_blocks(5, hint)
     assert [b.block_id for b in blocks] == [6, 7, 5, 3, 1]
     # Every unselected page keeps its relative order and the queue stays
@@ -4467,7 +4505,13 @@ def test_soft_retention_ignores_active_and_null_ids():
     null_id = pool.null_block.block_id
     assert _free_ids(manager) == [7, 5, 4, 3, 2, 1]
 
-    hint = BlockRetentionHint(lambda: {active_id, null_id, 2})
+    hint = BlockRetentionHint(
+        lambda: {
+            active_id: BlockRetentionTier.NORMAL,
+            null_id: BlockRetentionTier.NORMAL,
+            2: BlockRetentionTier.NORMAL,
+        }
+    )
     blocks = pool.get_new_blocks(1, hint)
     assert blocks[0].block_id == 7
     # Force the full fallback: only free pages are ever consumed.
@@ -4504,9 +4548,9 @@ def test_retention_resolver_not_called_on_uncached_fast_path():
     pool = manager.block_pool
     calls = []
 
-    def resolver() -> set[int]:
+    def resolver() -> dict[int, BlockRetentionTier]:
         calls.append(1)
-        return set()
+        return {}
 
     hint = BlockRetentionHint(resolver)
     # All free pages are unhashed: the waiting-demand resolver must never run.
@@ -4526,11 +4570,11 @@ def test_retention_resolver_called_once_per_allocation():
     manager = _seed_fully_cached_free_queue(6)
     calls = []
 
-    def resolver() -> set[int]:
+    def resolver() -> dict[int, BlockRetentionTier]:
         calls.append(1)
         # Includes a block that is active (touched) by this very allocation:
         # active IDs are not in the free queue and must simply be ignored.
-        return {3}
+        return {3: BlockRetentionTier.NORMAL}
 
     # One allocate_slots transaction with a local hit plus external computed
     # tokens drives two BlockPool.get_new_blocks calls (external-computed
@@ -4638,7 +4682,9 @@ def test_retained_eviction_uses_official_accounting():
 
     # Both free pages are retained, so the allocation falls back to them:
     # the official eviction path must still run exactly once per page.
-    hint = BlockRetentionHint(lambda: {1, 2})
+    hint = BlockRetentionHint(
+        lambda: {1: BlockRetentionTier.NORMAL, 2: BlockRetentionTier.NORMAL}
+    )
     blocks = pool.get_new_blocks(2, hint)
     assert sorted(b.block_id for b in blocks) == [1, 2]
     assert len(pool.cached_block_hash_to_block) == 0

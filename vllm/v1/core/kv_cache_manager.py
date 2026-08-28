@@ -16,6 +16,7 @@ from vllm.v1.core.kv_cache_coordinator import (
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
     BlockRetentionHint,
+    BlockRetentionTier,
     KVCacheBlock,
     KVCacheBlockCopy,
 )
@@ -408,7 +409,7 @@ class KVCacheManager:
         full_sequence_must_fit: bool = False,
         reserved_blocks: int = 0,
         has_scheduled_reqs: bool = True,
-        retention_resolver: Callable[[], set[int]] | None = None,
+        retention_resolver: Callable[[], dict[int, BlockRetentionTier]] | None = None,
         retention_observer: Callable[[int, int], None] | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
@@ -442,10 +443,10 @@ class KVCacheManager:
                 blocks an already in-flight (prefilling) sequence is relying on.
             has_scheduled_reqs: Whether any requests are already scheduled to run
                 this step, controls whether watermark is applied.
-            retention_resolver: Optional lazy resolver of block IDs to retain
-                when possible while selecting free pages. Shared by all physical
-                allocations of this transaction (including hybrid groups), so
-                the demand scan runs at most once per allocation.
+            retention_resolver: Optional lazy resolver of physical block
+                retention tiers. Shared by all physical allocations of this
+                transaction (including hybrid groups), so the demand scan runs
+                at most once per allocation.
             retention_observer: Optional callback receiving the number of LRU
                 evictions avoided and retained blocks consumed as fallback.
 

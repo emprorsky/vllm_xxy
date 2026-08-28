@@ -108,6 +108,9 @@ async def fetch_metrics(session: aiohttp.ClientSession) -> dict:
                 "vllm:kv_retention_candidates_total",
                 "vllm:kv_retention_candidates_with_hits_total",
                 "vllm:kv_retention_blocks_total",
+                "vllm:kv_retention_normal_blocks_total",
+                "vllm:kv_retention_resumed_blocks_total",
+                "vllm:kv_retention_high_priority_blocks_total",
                 "vllm:kv_retention_avoided_evictions_total",
                 "vllm:kv_retention_fallback_blocks_total",
                 "vllm:kv_admission_selection_calls_total",
@@ -368,6 +371,11 @@ async def main():
                 "vllm:kv_retention_candidates_with_hits_total"
             ),
             "blocks": delta("vllm:kv_retention_blocks_total"),
+            "normal_blocks": delta("vllm:kv_retention_normal_blocks_total"),
+            "resumed_blocks": delta("vllm:kv_retention_resumed_blocks_total"),
+            "high_priority_blocks": delta(
+                "vllm:kv_retention_high_priority_blocks_total"
+            ),
             "avoided_evictions": delta("vllm:kv_retention_avoided_evictions_total"),
             "fallback_blocks": delta("vllm:kv_retention_fallback_blocks_total"),
         },

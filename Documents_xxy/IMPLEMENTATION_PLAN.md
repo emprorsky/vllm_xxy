@@ -1,11 +1,12 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1、Phase 2、Phase 3、Phase 4 correctness Gate 已完成；Phase 2
-> 性能 Gate 未通过，Phase 3/4 初步性能信号偏正但尚未做多轮统计验收。详见
+> 状态：Phase 1、Phase 2、Phase 3、Phase 4、Phase 5a correctness Gate 已完成；
+> Phase 2 性能 Gate 未通过，Phase 3/4/5a 的性能信号尚未完成稳定统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
 > [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)、
-> [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)。
+> [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -992,6 +993,15 @@ Required tests:
 | same | `test_feature_context_is_not_request_state` | one completed scheduler iteration | inspect Request/context references | no feature cache persisted on Request |
 
 ### I.3 Phase 5a: priority/demand-aware retention
+
+> 实施状态（2026-08-28）：correctness Gate 已完成。保留
+> `waiting_queue_aware` 作为 Phase 2 二值对照，新增显式实验策略
+> `priority_aware`；底层统一为 `block_id -> tier`，按 tier 0→3 淘汰，tier
+> 内保持 LRU，并回退遍历所有 tier。两对反向顺序压力 A/B 的平均 wall time
+> 为 195.645→191.822 s（-1.954%），吞吐 +1.970%；但 preemption/prefix-hit
+> 的逐对方向不一致，且 TTFT p50 均值退化，因此只验收 correctness，不宣称
+> 稳定 KV 效率收益。详见
+> [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)。
 
 Evolve `set[int]` into a small `block_id -> retention_tier` hint:
 
