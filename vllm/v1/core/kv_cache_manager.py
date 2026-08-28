@@ -291,12 +291,24 @@ class KVCacheManager:
         blocks, num_new_computed_tokens, _ = self._lookup_computed_blocks(request)
         return blocks, num_new_computed_tokens
 
-    def get_computed_blocks(self, request: Request) -> tuple[KVCacheBlocks, int, int]:
+    def peek_computed_blocks_with_boundary(
+        self, request: Request
+    ) -> tuple[KVCacheBlocks, int, int]:
+        """Return the complete event-free local prefix feature."""
+        return self._lookup_computed_blocks(request)
+
+    def get_computed_blocks(
+        self,
+        request: Request,
+        precomputed: tuple[KVCacheBlocks, int, int] | None = None,
+    ) -> tuple[KVCacheBlocks, int, int]:
         """Get the computed (cached) blocks for the request.
         Note that the computed blocks must be full.
 
         Args:
             request: The request to get the computed blocks.
+            precomputed: An event-free lookup from the current KV generation,
+                if one has already been resolved by the scheduler.
 
         Returns:
             A tuple containing:
@@ -309,7 +321,9 @@ class KVCacheManager:
                   the junction and defeat cross-request reuse.
         """
         blocks, num_new_computed_tokens, shared_prefix_boundary = (
-            self._lookup_computed_blocks(request)
+            precomputed
+            if precomputed is not None
+            else self._lookup_computed_blocks(request)
         )
 
         # When kv_cache_report_mode is "full", emit BlockStored events

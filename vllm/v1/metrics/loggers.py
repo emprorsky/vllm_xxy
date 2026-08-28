@@ -660,6 +660,28 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             for field, documentation in admission_counter_docs.items()
         }
 
+        feature_counter_docs = {
+            "prefix_requests": "Number of lazy local prefix feature reads.",
+            "prefix_resolutions": (
+                "Number of local prefix features resolved from KV state."
+            ),
+            "prefix_cache_hits": (
+                "Number of local prefix feature reads served from memoization."
+            ),
+            "invalidations": "Number of scheduling-feature KV invalidations.",
+        }
+        self.counter_scheduling_features = {
+            field: create_metric_per_engine(
+                self._counter_cls(
+                    name=f"vllm:scheduling_feature_{field}",
+                    documentation=documentation,
+                    labelnames=labelnames,
+                ),
+                per_engine_labelvalues,
+            )
+            for field, documentation in feature_counter_docs.items()
+        }
+
         #
         # External - KV connector prefix cache
         #
@@ -1193,6 +1215,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             admission_stats = scheduler_stats.kv_admission_stats
             for field, counters in self.counter_kv_admission.items():
                 counters[engine_idx].inc(getattr(admission_stats, field))
+            feature_stats = scheduler_stats.scheduling_feature_stats
+            for field, counters in self.counter_scheduling_features.items():
+                counters[engine_idx].inc(getattr(feature_stats, field))
 
             if scheduler_stats.connector_prefix_cache_stats is not None:
                 self.counter_connector_prefix_cache_queries[engine_idx].inc(

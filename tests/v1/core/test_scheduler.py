@@ -6345,13 +6345,13 @@ def test_retention_candidate_window_is_bounded():
     assert _num_waiting_requests(scheduler) == 4
 
     peeked: list[str] = []
-    real_peek = scheduler.kv_cache_manager.peek_computed_blocks
+    real_peek = scheduler.kv_cache_manager.peek_computed_blocks_with_boundary
 
     def peek_spy(request):
         peeked.append(request.request_id)
         return real_peek(request)
 
-    scheduler.kv_cache_manager.peek_computed_blocks = peek_spy
+    scheduler.kv_cache_manager.peek_computed_blocks_with_boundary = peek_spy
 
     scheduler.update_from_output(output1, make_output(scheduler))
     scheduler.schedule()
@@ -6500,6 +6500,8 @@ def test_cache_affinity_prefers_less_remaining_prefill():
     cold, warm = _make_phase3_candidates()
     scheduler.add_request(cold)
     scheduler.add_request(warm)
+    real_lookup = scheduler.kv_cache_manager._lookup_computed_blocks
+    scheduler.kv_cache_manager._lookup_computed_blocks = Mock(wraps=real_lookup)
 
     output = scheduler.schedule()
 
@@ -6517,6 +6519,7 @@ def test_cache_affinity_prefers_less_remaining_prefill():
     assert scheduler.kv_admission_stats.admitted_reordered == 1
     assert scheduler.kv_admission_stats.admitted_aged == 0
     assert scheduler.kv_admission_stats.admitted_cached_tokens == 48
+    assert scheduler.kv_cache_manager._lookup_computed_blocks.call_count == 2
     flushed_stats = scheduler.make_stats()
     assert flushed_stats is not None
     assert flushed_stats.kv_admission_stats.selection_calls == 1
@@ -6560,13 +6563,13 @@ def test_cache_affinity_does_not_cross_window():
         scheduler.add_request(request)
 
     peeked = []
-    real_peek = scheduler.kv_cache_manager.peek_computed_blocks
+    real_peek = scheduler.kv_cache_manager.peek_computed_blocks_with_boundary
 
     def peek_spy(request):
         peeked.append(request.request_id)
         return real_peek(request)
 
-    scheduler.kv_cache_manager.peek_computed_blocks = peek_spy
+    scheduler.kv_cache_manager.peek_computed_blocks_with_boundary = peek_spy
     output = scheduler.schedule()
 
     assert [request.req_id for request in output.scheduled_new_reqs] == ["first"]
@@ -6613,6 +6616,7 @@ def test_default_admission_does_not_probe_prefix():
 
     assert [request.req_id for request in output.scheduled_new_reqs] == ["cold"]
     assert scheduler.kv_admission_stats.selection_calls == 0
+    assert scheduler.scheduling_feature_context is None
 
 
 def test_failed_affinity_admission_preserves_queue():
@@ -6635,3 +6639,110 @@ def test_failed_affinity_admission_preserves_queue():
     assert scheduler.waiting.peek_n(2) == [cold, warm]
     assert len(scheduler.waiting) == 2
     scheduler.kv_cache_manager.record_prefix_cache_stats.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: generation-scoped lazy scheduling features.
+# ---------------------------------------------------------------------------
+
+
+def test_feature_context_memoizes_within_generation():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+        prefix_cache_eviction_policy="waiting_queue_aware",
+    )
+    request = _make_retention_request("candidate", [10] * 48)
+    scheduler.add_request(request)
+    real_peek = scheduler.kv_cache_manager.peek_computed_blocks_with_boundary
+    scheduler.kv_cache_manager.peek_computed_blocks_with_boundary = Mock(
+        wraps=real_peek
+    )
+    context = scheduler.scheduling_feature_context
+    assert context is not None
+
+    first, first_cached = context.local_prefix(request)
+    resolver = scheduler._make_waiting_demand_retention_resolver()
+    assert resolver is not None
+    resolver()
+    second, second_cached = context.local_prefix(request)
+
+    assert first is second
+    assert not first_cached
+    assert second_cached
+    assert (
+        scheduler.kv_cache_manager.peek_computed_blocks_with_boundary.call_count == 1
+    )
+    flushed = scheduler.make_stats()
+    assert flushed is not None
+    stats = flushed.scheduling_feature_stats
+    assert stats.prefix_requests == 3
+    assert stats.prefix_resolutions == 1
+    assert stats.prefix_cache_hits == 2
+    assert context.take_stats().prefix_requests == 0
+
+
+def test_feature_context_invalidates_after_kv_mutation():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    context = scheduler.scheduling_feature_context
+    assert context is not None
+    warm = _make_retention_request("warm-feature", [10] * 48 + [30] * 16)
+
+    before, _ = context.local_prefix(warm)
+    generation = context.kv_generation
+    assert before.cached_tokens == 0
+
+    _seed_phase3_prefix(scheduler)
+
+    after, was_cached = context.local_prefix(warm)
+    assert context.kv_generation > generation
+    assert not was_cached
+    assert after.cached_tokens == 48
+
+
+def test_feature_context_cheap_fields_do_not_touch_kv():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    context = scheduler.scheduling_feature_context
+    assert context is not None
+    request = _make_retention_request("cheap", [10] * 16)
+    request.priority = 2
+    request.arrival_time = 7.0
+    request.num_preemptions = 1
+    scheduler.kv_cache_manager.peek_computed_blocks_with_boundary = Mock(
+        side_effect=AssertionError("cheap features must not touch KV")
+    )
+
+    cheap = context.cheap(request)
+
+    assert cheap.priority == 2
+    assert cheap.arrival_time == 7.0
+    assert cheap.is_resumed
+    assert cheap.num_computed_tokens == 0
+    assert cheap.age_s(10.0) == 3.0
+    request.num_computed_tokens = 8
+    assert context.remaining_prefill_tokens(request) == 8
+
+
+def test_feature_context_is_not_request_state():
+    scheduler = create_scheduler(
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    context = scheduler.scheduling_feature_context
+    assert context is not None
+    request = _make_retention_request("derived-only", [10] * 16)
+
+    context.local_prefix(request)
+    scheduler.add_request(request)
+    output = scheduler.schedule()
+    scheduler.update_from_output(output, make_output(scheduler))
+
+    assert not hasattr(request, "local_prefix_feature")
+    assert not hasattr(request, "scheduling_feature_context")
+    assert not hasattr(request, "scheduling_feature_generation")

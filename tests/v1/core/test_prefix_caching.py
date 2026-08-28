@@ -4593,11 +4593,14 @@ def test_prefix_peek_full_report_emits_no_event():
     )
     assert req.kv_cache_report_mode == "full"
 
-    manager.peek_computed_blocks(req)
+    precomputed = manager.peek_computed_blocks_with_boundary(req)
     assert manager.take_events() == []
 
-    # The real admission path still emits full-report reuse events.
-    _, num_tokens, _ = manager.get_computed_blocks(req)
+    # Reusing the event-free result in the real admission path still emits
+    # full-report reuse events.
+    _, num_tokens, _ = manager.get_computed_blocks(
+        req, precomputed=precomputed
+    )
     assert num_tokens == 3 * block_size
     events = manager.take_events()
     assert events

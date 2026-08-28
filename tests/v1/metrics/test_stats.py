@@ -11,6 +11,7 @@ from vllm.v1.metrics.stats import (
     RequestStateStats,
     SchedulerIterationDetails,
     SchedulerStats,
+    SchedulingFeatureStats,
 )
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.utils import compute_iteration_details
@@ -57,6 +58,12 @@ def test_scheduler_iteration_details_serialization():
                 admitted_aged=10,
                 admitted_cached_tokens=11,
             ),
+            scheduling_feature_stats=SchedulingFeatureStats(
+                prefix_requests=12,
+                prefix_resolutions=13,
+                prefix_cache_hits=14,
+                invalidations=15,
+            ),
         )
     )
 
@@ -86,6 +93,14 @@ def test_scheduler_iteration_details_serialization():
         admitted_reordered=9,
         admitted_aged=10,
         admitted_cached_tokens=11,
+    )
+    assert decoded.scheduler_stats.scheduling_feature_stats == (
+        SchedulingFeatureStats(
+            prefix_requests=12,
+            prefix_resolutions=13,
+            prefix_cache_hits=14,
+            invalidations=15,
+        )
     )
 
 

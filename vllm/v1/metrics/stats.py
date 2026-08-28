@@ -197,6 +197,16 @@ class KVAdmissionStats:
 
 
 @dataclass
+class SchedulingFeatureStats:
+    """Lazy scheduling-feature activity since the previous stats flush."""
+
+    prefix_requests: int = 0
+    prefix_resolutions: int = 0
+    prefix_cache_hits: int = 0
+    invalidations: int = 0
+
+
+@dataclass
 class SchedulerIterationDetails:
     """Scheduler-side details for one engine iteration."""
 
@@ -233,6 +243,9 @@ class SchedulerStats:
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
     kv_retention_stats: KVRetentionStats = field(default_factory=KVRetentionStats)
     kv_admission_stats: KVAdmissionStats = field(default_factory=KVAdmissionStats)
+    scheduling_feature_stats: SchedulingFeatureStats = field(
+        default_factory=SchedulingFeatureStats
+    )
 
     spec_decoding_stats: SpecDecodingStats | None = None
     kv_connector_stats: dict[str, Any] | None = None

@@ -1,10 +1,11 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1、Phase 2、Phase 3 correctness Gate 已完成；Phase 2 性能
-> Gate 未通过，Phase 3 初步性能信号偏正但尚未做多轮统计验收。详见
+> 状态：Phase 1、Phase 2、Phase 3、Phase 4 correctness Gate 已完成；Phase 2
+> 性能 Gate 未通过，Phase 3/4 初步性能信号偏正但尚未做多轮统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
-> [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)。
+> [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -957,6 +958,15 @@ Go/no-go: no implementation that copies/scans the entire Priority heap is
 accepted as “bounded.”
 
 ### I.2 Phase 4: lazy SchedulingFeatureContext
+
+> 实施状态（2026-08-28）：已完成 correctness Gate。上下文仅在 Phase 2/3
+> KV-aware consumer 开启时创建；昂贵 prefix feature 按 Request 身份和 KV
+> generation 延迟解析、代内复用，并在 allocation/free/eviction/reset 等 KV
+> mutation 后失效。压力 A/B 中 154,192 次 feature read 有 12,249 次命中
+> memoization，实际 KV resolver 调用减少 7.944%；但每次成功 admission 仍约有
+> 102.15 次候选 probe，因此 Phase 4 解决了安全代内重复解析，没有解决跨 KV
+> mutation 的反复失败选择。完整结果见
+> [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)。
 
 Introduce the context only after there are two real consumers of expensive
 prefix data. It is a derived view, never Request state.

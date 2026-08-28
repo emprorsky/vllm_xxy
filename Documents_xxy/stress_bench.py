@@ -121,6 +121,10 @@ async def fetch_metrics(session: aiohttp.ClientSession) -> dict:
                 "vllm:kv_admission_admitted_reordered_total",
                 "vllm:kv_admission_admitted_aged_total",
                 "vllm:kv_admission_admitted_cached_tokens_total",
+                "vllm:scheduling_feature_prefix_requests_total",
+                "vllm:scheduling_feature_prefix_resolutions_total",
+                "vllm:scheduling_feature_prefix_cache_hits_total",
+                "vllm:scheduling_feature_invalidations_total",
             ):
                 if line.startswith(key + "{") or line.startswith(key + " "):
                     fields = line.rsplit(" ", 1)
@@ -390,6 +394,20 @@ async def main():
                 "vllm:kv_admission_admitted_cached_tokens_total"
             ),
         },
+        "scheduling_features": {
+            "prefix_requests": delta(
+                "vllm:scheduling_feature_prefix_requests_total"
+            ),
+            "prefix_resolutions": delta(
+                "vllm:scheduling_feature_prefix_resolutions_total"
+            ),
+            "prefix_cache_hits": delta(
+                "vllm:scheduling_feature_prefix_cache_hits_total"
+            ),
+            "invalidations": delta(
+                "vllm:scheduling_feature_invalidations_total"
+            ),
+        },
         "errors_detail": [r["error"] for r in err[:5]],
     }
     with open(out_path, "w") as f:
@@ -422,6 +440,7 @@ async def main():
     )
     print(f"保留  {summary['retention']}")
     print(f"准入  {summary['admission']}")
+    print(f"特征  {summary['scheduling_features']}")
     if err:
         print(f"错误示例: {summary['errors_detail'][:2]}")
     print(f"\n结果已存 {out_path}")
