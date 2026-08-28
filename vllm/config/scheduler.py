@@ -22,6 +22,7 @@ RunnerType = Literal["generate", "pooling", "draft"]
 SchedulerPolicy = Literal["fcfs", "priority"]
 PreemptionPolicy = Literal["default", "recompute_aware"]
 PrefixCacheEvictionPolicy = Literal["lru", "waiting_queue_aware"]
+AdmissionPolicy = Literal["default", "cache_affinity"]
 
 
 @config
@@ -134,6 +135,18 @@ class SchedulerConfig:
     """Upper bound on the number of near-head waiting requests probed for
     prefix-cache demand when ``prefix_cache_eviction_policy`` is
     "waiting_queue_aware" (and reused by later kv-aware admission features)."""
+
+    admission_policy: AdmissionPolicy = "default"
+    """The waiting-request admission policy:
+
+    - "default" preserves the base queue order and performs no speculative
+      prefix-cache probes.
+    - "cache_affinity" may reorder only within the first
+      ``kv_aware_candidate_window`` requests of the queue-head user-priority
+      tier, preferring resumed requests and less remaining prefill work."""
+
+    kv_aware_aging_threshold_s: float = Field(default=30.0, ge=0.0)
+    """Maximum waiting time before cache-affinity yields to base queue order."""
 
     disable_chunked_mm_input: bool = False
     """If set to true and chunked prefill is enabled, we do not want to

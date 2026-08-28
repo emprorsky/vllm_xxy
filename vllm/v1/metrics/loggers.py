@@ -627,6 +627,39 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             for field, documentation in retention_counter_docs.items()
         }
 
+        admission_counter_docs = {
+            "selection_calls": "Number of bounded cache-affinity selections.",
+            "candidates": "Number of requests considered for cache affinity.",
+            "candidate_probes": "Number of speculative local prefix probes.",
+            "candidates_with_hits": (
+                "Number of admission candidates with local prefix hits."
+            ),
+            "reordered": "Number of selections that bypassed the base queue head.",
+            "aged_selections": "Number of selections made from the aged tier.",
+            "selected_cached_tokens": (
+                "Number of cached tokens attached to selected candidates."
+            ),
+            "admitted": "Number of successful bounded candidate admissions.",
+            "admitted_reordered": (
+                "Number of successful admissions that bypassed the base head."
+            ),
+            "admitted_aged": "Number of successful admissions from the aged tier.",
+            "admitted_cached_tokens": (
+                "Number of local cached tokens used by successful admissions."
+            ),
+        }
+        self.counter_kv_admission = {
+            field: create_metric_per_engine(
+                self._counter_cls(
+                    name=f"vllm:kv_admission_{field}",
+                    documentation=documentation,
+                    labelnames=labelnames,
+                ),
+                per_engine_labelvalues,
+            )
+            for field, documentation in admission_counter_docs.items()
+        }
+
         #
         # External - KV connector prefix cache
         #
@@ -1157,6 +1190,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             retention_stats = scheduler_stats.kv_retention_stats
             for field, counters in self.counter_kv_retention.items():
                 counters[engine_idx].inc(getattr(retention_stats, field))
+            admission_stats = scheduler_stats.kv_admission_stats
+            for field, counters in self.counter_kv_admission.items():
+                counters[engine_idx].inc(getattr(admission_stats, field))
 
             if scheduler_stats.connector_prefix_cache_stats is not None:
                 self.counter_connector_prefix_cache_queries[engine_idx].inc(

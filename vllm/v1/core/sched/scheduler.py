@@ -47,7 +47,7 @@ from vllm.v1.core.sched.output import (
     ScheduledEncoderInputStats,
     SchedulerOutput,
 )
-from vllm.v1.core.sched.policy import create_decision_policy
+from vllm.v1.core.sched.policy import AdmissionCandidate, create_decision_policy
 from vllm.v1.core.sched.request_queue import (
     RequestQueue,
     SchedulingPolicy,
@@ -58,6 +58,7 @@ from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutp
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import (
+    KVAdmissionStats,
     KVRetentionStats,
     PrefixCacheStats,
     RequestSpecDecodeMetrics,
@@ -198,7 +199,9 @@ class Scheduler(SchedulerInterface):
             ) from e
         # Preemption victim selection policy (default = base-commit behavior).
         self.decision_policy = create_decision_policy(
-            self.policy, self.scheduler_config.preemption_policy
+            self.policy,
+            self.scheduler_config.preemption_policy,
+            self.scheduler_config.admission_policy,
         )
         # Priority queues for requests.
         self.waiting = self._create_waiting_queue()
@@ -215,6 +218,7 @@ class Scheduler(SchedulerInterface):
         # IDs of requests preempted since the last call to schedule().
         self.reset_preempted_req_ids: set[str] = set()
         self.kv_retention_stats = KVRetentionStats()
+        self.kv_admission_stats = KVAdmissionStats()
 
         # Counter for requests waiting for streaming input. Used to calculate
         # number of unfinished requests
@@ -787,6 +791,7 @@ class Scheduler(SchedulerInterface):
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
             step_skipped_waiting = self._create_waiting_queue()
+            admission_now_s = time.time()
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:
                 if input_budget <= draft_slots:
@@ -842,6 +847,16 @@ class Scheduler(SchedulerInterface):
                     step_skipped_waiting.prepend_request(request)
                     continue
 
+                request_queue, request, admission_candidate = (
+                    self._select_cache_affinity_request(
+                        request_queue,
+                        request,
+                        scheduled_loras,
+                        admission_now_s,
+                    )
+                )
+                request_id = request.request_id
+
                 num_external_computed_tokens = 0
                 load_kv_async = False
                 connector_prefix_cache_queries, connector_prefix_cache_hits = 0, 0
@@ -876,7 +891,7 @@ class Scheduler(SchedulerInterface):
                             # The request cannot be scheduled because
                             # the KVConnector couldn't determine
                             # the number of matched tokens.
-                            request_queue.pop_request()
+                            self._remove_waiting_request(request_queue, request)
                             step_skipped_waiting.prepend_request(request)
                             continue
 
@@ -931,7 +946,7 @@ class Scheduler(SchedulerInterface):
                             request, num_computed_tokens
                         )
                     ):
-                        request_queue.pop_request()
+                        self._remove_waiting_request(request_queue, request)
                         step_skipped_waiting.prepend_request(request)
                         continue
 
@@ -1097,6 +1112,20 @@ class Scheduler(SchedulerInterface):
                         self.encoder_cache_manager.free(request)
                     break
 
+                if admission_candidate is not None:
+                    admission_stats = self.kv_admission_stats
+                    admission_stats.admitted += 1
+                    admission_stats.admitted_reordered += (
+                        admission_candidate.base_position > 0
+                    )
+                    admission_stats.admitted_aged += (
+                        admission_now_s - request.arrival_time
+                        >= self.scheduler_config.kv_aware_aging_threshold_s
+                    )
+                    admission_stats.admitted_cached_tokens += (
+                        num_new_local_computed_tokens
+                    )
+
                 # KVTransfer: the connector uses this info to determine
                 # if a load is needed. Note that
                 # This information is used to determine if a load is
@@ -1123,7 +1152,7 @@ class Scheduler(SchedulerInterface):
                         request, num_new_local_computed_tokens
                     )
 
-                request = request_queue.pop_request()
+                self._remove_waiting_request(request_queue, request)
                 if load_kv_async:
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
@@ -2237,6 +2266,129 @@ class Scheduler(SchedulerInterface):
 
         return self.waiting or self.skipped_waiting or None
 
+    def _peek_waiting_candidates(
+        self, window: int
+    ) -> list[tuple[RequestQueue, Request]]:
+        """Return the bounded global waiting order with each source queue."""
+        if window <= 0:
+            return []
+        if self.policy == SchedulingPolicy.FCFS:
+            candidates: list[tuple[RequestQueue, Request]] = []
+            for queue in (self.skipped_waiting, self.waiting):
+                remaining = window - len(candidates)
+                if remaining <= 0:
+                    break
+                candidates.extend(
+                    (queue, request) for request in queue.peek_n(remaining)
+                )
+            return candidates
+
+        skipped = [
+            (key, 0, index, self.skipped_waiting, request)
+            for index, (key, request) in enumerate(
+                self.skipped_waiting.peek_n_with_keys(window)
+            )
+        ]
+        waiting = [
+            (key, 1, index, self.waiting, request)
+            for index, (key, request) in enumerate(
+                self.waiting.peek_n_with_keys(window)
+            )
+        ]
+        return [
+            (queue, request)
+            for _, _, _, queue, request in itertools.islice(
+                heapq.merge(skipped, waiting), window
+            )
+        ]
+
+    def _can_schedule_lora(
+        self, request: Request, scheduled_loras: set[int]
+    ) -> bool:
+        if not self.lora_config or not request.lora_request:
+            return True
+        return not (
+            len(scheduled_loras) == self.lora_config.max_loras
+            and request.lora_request.lora_int_id not in scheduled_loras
+        )
+
+    def _select_cache_affinity_request(
+        self,
+        base_queue: RequestQueue,
+        base_request: Request,
+        scheduled_loras: set[int],
+        now_s: float,
+    ) -> tuple[RequestQueue, Request, AdmissionCandidate | None]:
+        """Choose one ready request from a bounded same-priority window."""
+        if self.scheduler_config.admission_policy != "cache_affinity":
+            return base_queue, base_request, None
+
+        eligible: list[tuple[RequestQueue, Request, int]] = []
+        for base_position, (queue, request) in enumerate(
+            self._peek_waiting_candidates(
+                self.scheduler_config.kv_aware_candidate_window
+            )
+        ):
+            if request.priority != base_request.priority:
+                break
+            if self._is_blocked_waiting_status(request.status):
+                continue
+            if request.num_stale_output_tokens > 0 and not request.drop_stale_output:
+                continue
+            if not self._can_schedule_lora(request, scheduled_loras):
+                continue
+            eligible.append((queue, request, base_position))
+
+        if len(eligible) <= 1:
+            return base_queue, base_request, None
+
+        candidates: list[AdmissionCandidate] = []
+        candidate_queues: dict[int, RequestQueue] = {}
+        stats = self.kv_admission_stats
+        stats.selection_calls += 1
+        stats.candidates += len(eligible)
+        for queue, request, base_position in eligible:
+            if request.num_computed_tokens > 0:
+                local_cached_tokens = request.num_computed_tokens
+            else:
+                stats.candidate_probes += 1
+                _, local_cached_tokens = (
+                    self.kv_cache_manager.peek_computed_blocks(request)
+                )
+            if local_cached_tokens > 0:
+                stats.candidates_with_hits += 1
+            candidates.append(
+                AdmissionCandidate(
+                    request=request,
+                    base_position=base_position,
+                    local_cached_tokens=local_cached_tokens,
+                )
+            )
+            candidate_queues[id(request)] = queue
+
+        chosen = self.decision_policy.choose_admission(
+            candidates,
+            now_s,
+            self.scheduler_config.kv_aware_aging_threshold_s,
+        )
+        stats.reordered += chosen.request is not base_request
+        stats.aged_selections += (
+            now_s - chosen.request.arrival_time
+            >= self.scheduler_config.kv_aware_aging_threshold_s
+        )
+        stats.selected_cached_tokens += chosen.local_cached_tokens
+        return candidate_queues[id(chosen.request)], chosen.request, chosen
+
+    @staticmethod
+    def _remove_waiting_request(
+        request_queue: RequestQueue, request: Request
+    ) -> None:
+        if request_queue.peek_request() is request:
+            popped = request_queue.pop_request()
+            assert popped is request
+        else:
+            request_queue.remove_request(request)
+
     def _iter_waiting_demand_candidates(self, window: int) -> list[Request]:
         """Bounded near-head waiting requests in true scheduling order.
 
@@ -2257,12 +2409,15 @@ class Scheduler(SchedulerInterface):
                     break
                 candidates.extend(queue.peek_n(remaining))
         else:
-            order_key = self.decision_policy.waiting_order_key
             # (key, source_tag) is totally ordered without comparing Requests.
             skipped = [
-                (order_key(req), 0, req) for req in self.skipped_waiting.peek_n(window)
+                (key, 0, req)
+                for key, req in self.skipped_waiting.peek_n_with_keys(window)
             ]
-            waiting = [(order_key(req), 1, req) for req in self.waiting.peek_n(window)]
+            waiting = [
+                (key, 1, req)
+                for key, req in self.waiting.peek_n_with_keys(window)
+            ]
             candidates = [
                 req
                 for _, _, req in itertools.islice(heapq.merge(skipped, waiting), window)
@@ -2780,6 +2935,8 @@ class Scheduler(SchedulerInterface):
         )
         kv_retention_stats = self.kv_retention_stats
         self.kv_retention_stats = KVRetentionStats()
+        kv_admission_stats = self.kv_admission_stats
+        self.kv_admission_stats = KVAdmissionStats()
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
@@ -2789,6 +2946,7 @@ class Scheduler(SchedulerInterface):
             connector_prefix_cache_stats=connector_prefix_cache_stats,
             kv_cache_eviction_events=eviction_events,
             kv_retention_stats=kv_retention_stats,
+            kv_admission_stats=kv_admission_stats,
             spec_decoding_stats=spec_stats,
             kv_connector_stats=connector_stats_payload,
             cudagraph_stats=cudagraph_stats,

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from vllm.v1.core.sched.policy import create_decision_policy
+from vllm.v1.core.sched.policy import AdmissionCandidate, create_decision_policy
 from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
 
 
@@ -21,6 +21,7 @@ def make_request(
     arrival_time: float = 0.0,
     num_computed_tokens: int = 0,
     num_preemptions: int = 0,
+    num_tokens: int = 100,
 ) -> Any:
     return SimpleNamespace(
         request_id=rid,
@@ -28,6 +29,7 @@ def make_request(
         arrival_time=arrival_time,
         num_computed_tokens=num_computed_tokens,
         num_preemptions=num_preemptions,
+        num_tokens=num_tokens,
     )
 
 
@@ -204,6 +206,42 @@ class TestWaitingOrder:
         queue.remove_request(request)
         queue.add_request(request)
         assert queue.peek_request() is request
+
+
+class TestAdmissionPolicy:
+    def test_default_preserves_base_order(self):
+        policy = create_decision_policy(
+            SchedulingPolicy.FCFS, "default", "default"
+        )
+        first = AdmissionCandidate(make_request("first"), 0, 0)
+        warm = AdmissionCandidate(make_request("warm"), 1, 80)
+
+        assert policy.choose_admission([first, warm], 10.0, 30.0) is first
+
+    def test_cache_affinity_prefers_resume_then_remaining_work(self):
+        policy = create_decision_policy(
+            SchedulingPolicy.FCFS, "default", "cache_affinity"
+        )
+        cold = AdmissionCandidate(make_request("cold"), 0, 0)
+        warm = AdmissionCandidate(make_request("warm"), 1, 80)
+        resumed = AdmissionCandidate(
+            make_request("resumed", num_preemptions=1), 2, 0
+        )
+
+        chosen = policy.choose_admission([cold, warm, resumed], 10.0, 30.0)
+
+        assert chosen is resumed
+
+    def test_aged_candidate_returns_to_base_order(self):
+        policy = create_decision_policy(
+            SchedulingPolicy.FCFS, "default", "cache_affinity"
+        )
+        aged = AdmissionCandidate(make_request("aged", arrival_time=1.0), 0, 0)
+        warm = AdmissionCandidate(make_request("warm", arrival_time=9.0), 1, 80)
+
+        chosen = policy.choose_admission([aged, warm], 10.0, 5.0)
+
+        assert chosen is aged
 
 
 if __name__ == "__main__":

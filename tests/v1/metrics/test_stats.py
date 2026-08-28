@@ -4,6 +4,7 @@ from vllm.v1.core.sched.output import ScheduledEncoderInputStats, SchedulerOutpu
 from vllm.v1.engine import EngineCoreOutputs, FinishReason
 from vllm.v1.metrics.stats import (
     IterationStats,
+    KVAdmissionStats,
     KVRetentionStats,
     PrefillStats,
     PromptTokenStats,
@@ -43,6 +44,19 @@ def test_scheduler_iteration_details_serialization():
                 avoided_evictions=4,
                 fallback_blocks=5,
             ),
+            kv_admission_stats=KVAdmissionStats(
+                selection_calls=1,
+                candidates=2,
+                candidate_probes=3,
+                candidates_with_hits=4,
+                reordered=5,
+                aged_selections=6,
+                selected_cached_tokens=7,
+                admitted=8,
+                admitted_reordered=9,
+                admitted_aged=10,
+                admitted_cached_tokens=11,
+            ),
         )
     )
 
@@ -59,6 +73,19 @@ def test_scheduler_iteration_details_serialization():
         blocks=3,
         avoided_evictions=4,
         fallback_blocks=5,
+    )
+    assert decoded.scheduler_stats.kv_admission_stats == KVAdmissionStats(
+        selection_calls=1,
+        candidates=2,
+        candidate_probes=3,
+        candidates_with_hits=4,
+        reordered=5,
+        aged_selections=6,
+        selected_cached_tokens=7,
+        admitted=8,
+        admitted_reordered=9,
+        admitted_aged=10,
+        admitted_cached_tokens=11,
     )
 
 

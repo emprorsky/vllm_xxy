@@ -110,6 +110,17 @@ async def fetch_metrics(session: aiohttp.ClientSession) -> dict:
                 "vllm:kv_retention_blocks_total",
                 "vllm:kv_retention_avoided_evictions_total",
                 "vllm:kv_retention_fallback_blocks_total",
+                "vllm:kv_admission_selection_calls_total",
+                "vllm:kv_admission_candidates_total",
+                "vllm:kv_admission_candidate_probes_total",
+                "vllm:kv_admission_candidates_with_hits_total",
+                "vllm:kv_admission_reordered_total",
+                "vllm:kv_admission_aged_selections_total",
+                "vllm:kv_admission_selected_cached_tokens_total",
+                "vllm:kv_admission_admitted_total",
+                "vllm:kv_admission_admitted_reordered_total",
+                "vllm:kv_admission_admitted_aged_total",
+                "vllm:kv_admission_admitted_cached_tokens_total",
             ):
                 if line.startswith(key + "{") or line.startswith(key + " "):
                     fields = line.rsplit(" ", 1)
@@ -356,6 +367,29 @@ async def main():
             "avoided_evictions": delta("vllm:kv_retention_avoided_evictions_total"),
             "fallback_blocks": delta("vllm:kv_retention_fallback_blocks_total"),
         },
+        "admission": {
+            "selection_calls": delta("vllm:kv_admission_selection_calls_total"),
+            "candidates": delta("vllm:kv_admission_candidates_total"),
+            "candidate_probes": delta("vllm:kv_admission_candidate_probes_total"),
+            "candidates_with_hits": delta(
+                "vllm:kv_admission_candidates_with_hits_total"
+            ),
+            "reordered": delta("vllm:kv_admission_reordered_total"),
+            "aged_selections": delta(
+                "vllm:kv_admission_aged_selections_total"
+            ),
+            "selected_cached_tokens": delta(
+                "vllm:kv_admission_selected_cached_tokens_total"
+            ),
+            "admitted": delta("vllm:kv_admission_admitted_total"),
+            "admitted_reordered": delta(
+                "vllm:kv_admission_admitted_reordered_total"
+            ),
+            "admitted_aged": delta("vllm:kv_admission_admitted_aged_total"),
+            "admitted_cached_tokens": delta(
+                "vllm:kv_admission_admitted_cached_tokens_total"
+            ),
+        },
         "errors_detail": [r["error"] for r in err[:5]],
     }
     with open(out_path, "w") as f:
@@ -387,6 +421,7 @@ async def main():
         f"queries={summary['prefix_queries_delta']}"
     )
     print(f"保留  {summary['retention']}")
+    print(f"准入  {summary['admission']}")
     if err:
         print(f"错误示例: {summary['errors_detail'][:2]}")
     print(f"\n结果已存 {out_path}")

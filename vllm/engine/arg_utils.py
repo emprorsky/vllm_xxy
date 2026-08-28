@@ -103,6 +103,7 @@ from vllm.config.parallel import (
     ExpertPlacementStrategy,
 )
 from vllm.config.scheduler import (
+    AdmissionPolicy,
     PreemptionPolicy,
     PrefixCacheEvictionPolicy,
     SchedulerPolicy,
@@ -688,6 +689,10 @@ class EngineArgs:
         SchedulerConfig.prefix_cache_eviction_policy
     )
     kv_aware_candidate_window: int = SchedulerConfig.kv_aware_candidate_window
+    admission_policy: AdmissionPolicy = SchedulerConfig.admission_policy
+    kv_aware_aging_threshold_s: float = (
+        SchedulerConfig.kv_aware_aging_threshold_s
+    )
     scheduler_cls: str | type[object] | None = SchedulerConfig.scheduler_cls
 
     pooler_config: PoolerConfig | None = ModelConfig.pooler_config
@@ -1584,6 +1589,14 @@ class EngineArgs:
             **scheduler_kwargs["kv_aware_candidate_window"],
         )
         scheduler_group.add_argument(
+            "--admission-policy",
+            **scheduler_kwargs["admission_policy"],
+        )
+        scheduler_group.add_argument(
+            "--kv-aware-aging-threshold-s",
+            **scheduler_kwargs["kv_aware_aging_threshold_s"],
+        )
+        scheduler_group.add_argument(
             "--enable-chunked-prefill",
             **{
                 **scheduler_kwargs["enable_chunked_prefill"],
@@ -2377,6 +2390,8 @@ class EngineArgs:
             preemption_policy=self.preemption_policy,
             prefix_cache_eviction_policy=self.prefix_cache_eviction_policy,
             kv_aware_candidate_window=self.kv_aware_candidate_window,
+            admission_policy=self.admission_policy,
+            kv_aware_aging_threshold_s=self.kv_aware_aging_threshold_s,
             scheduler_cls=self.scheduler_cls,
             long_prefill_token_threshold=self.long_prefill_token_threshold,
             scheduler_reserve_full_isl=self.scheduler_reserve_full_isl,

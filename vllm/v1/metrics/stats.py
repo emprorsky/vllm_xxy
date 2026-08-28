@@ -180,6 +180,23 @@ class KVRetentionStats:
 
 
 @dataclass
+class KVAdmissionStats:
+    """Cache-affinity admission activity since the previous stats flush."""
+
+    selection_calls: int = 0
+    candidates: int = 0
+    candidate_probes: int = 0
+    candidates_with_hits: int = 0
+    reordered: int = 0
+    aged_selections: int = 0
+    selected_cached_tokens: int = 0
+    admitted: int = 0
+    admitted_reordered: int = 0
+    admitted_aged: int = 0
+    admitted_cached_tokens: int = 0
+
+
+@dataclass
 class SchedulerIterationDetails:
     """Scheduler-side details for one engine iteration."""
 
@@ -215,6 +232,7 @@ class SchedulerStats:
 
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
     kv_retention_stats: KVRetentionStats = field(default_factory=KVRetentionStats)
+    kv_admission_stats: KVAdmissionStats = field(default_factory=KVAdmissionStats)
 
     spec_decoding_stats: SpecDecodingStats | None = None
     kv_connector_stats: dict[str, Any] | None = None

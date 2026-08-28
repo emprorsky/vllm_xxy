@@ -478,6 +478,8 @@ def test_prefix_cache_default():
     assert engine_args.prefix_cache_retention_interval == 0
     assert engine_args.prefix_cache_eviction_policy == "lru"
     assert engine_args.kv_aware_candidate_window == 8
+    assert engine_args.admission_policy == "default"
+    assert engine_args.kv_aware_aging_threshold_s == 30.0
 
     # with flag to turn it on.
     args = parser.parse_args(["--enable-prefix-caching"])
@@ -499,11 +501,17 @@ def test_prefix_cache_default():
             "waiting_queue_aware",
             "--kv-aware-candidate-window",
             "4",
+            "--admission-policy",
+            "cache_affinity",
+            "--kv-aware-aging-threshold-s",
+            "5",
         ]
     )
     engine_args = EngineArgs.from_cli_args(args=args)
     assert engine_args.prefix_cache_eviction_policy == "waiting_queue_aware"
     assert engine_args.kv_aware_candidate_window == 4
+    assert engine_args.admission_policy == "cache_affinity"
+    assert engine_args.kv_aware_aging_threshold_s == 5.0
 
 
 def test_prefix_cache_retention_interval_from_deprecated_env(

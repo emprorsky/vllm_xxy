@@ -76,6 +76,8 @@ def create_scheduler(
     per_request_spec_decode_metrics: str = "none",
     prefix_cache_eviction_policy: str = "lru",
     kv_aware_candidate_window: int = 8,
+    admission_policy: str = "default",
+    kv_aware_aging_threshold_s: float = 30.0,
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -114,6 +116,8 @@ def create_scheduler(
         watermark=0.0,
         prefix_cache_eviction_policy=prefix_cache_eviction_policy,
         kv_aware_candidate_window=kv_aware_candidate_window,
+        admission_policy=admission_policy,
+        kv_aware_aging_threshold_s=kv_aware_aging_threshold_s,
     )
     # Cache config, optionally force APC
     cache_config = CacheConfig(

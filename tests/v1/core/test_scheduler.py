@@ -10,6 +10,7 @@ import torch
 from transformers import OPTConfig
 
 import vllm.envs as envs
+import vllm.v1.core.sched.scheduler as scheduler_module
 from vllm.config import (
     CacheConfig,
     ECTransferConfig,
@@ -2577,6 +2578,9 @@ def create_scheduler_with_priority(
     ec_role: str | None = None,
     use_v2_model_runner: bool | None = None,
     preemption_policy: PreemptionPolicy = "default",
+    admission_policy: str = "default",
+    kv_aware_candidate_window: int = 8,
+    kv_aware_aging_threshold_s: float = 30.0,
 ) -> Scheduler:
     """Create scheduler with priority policy enabled.
 
@@ -2609,6 +2613,9 @@ def create_scheduler_with_priority(
         is_encoder_decoder=model_config.is_encoder_decoder,
         policy="priority",  # Enable priority scheduling
         preemption_policy=preemption_policy,
+        admission_policy=admission_policy,
+        kv_aware_candidate_window=kv_aware_candidate_window,
+        kv_aware_aging_threshold_s=kv_aware_aging_threshold_s,
         # Ensure admission/preemption mechanics are deterministic
         watermark=0.0,
     )
@@ -2930,6 +2937,10 @@ def test_priority_waiting_queue_merge_uses_policy_order(tmp_path):
     selected = scheduler._select_waiting_queue_for_scheduling()
 
     assert selected is scheduler.skipped_waiting
+    assert [
+        request.request_id
+        for _, request in scheduler._peek_waiting_candidates(window=2)
+    ] == ["resumed", "fresh"]
 
 
 def test_priority_scheduling_mixed_priority_and_arrival():
@@ -6442,3 +6453,185 @@ def test_priority_peek_n_matches_pop_order():
         for request in popped:
             queue.add_request(request)
         assert queue.peek_n(num_requests) == popped
+
+
+def test_priority_remove_bounded_candidate_preserves_heap_order():
+    queue = PriorityRequestQueue()
+    requests = create_requests(num_requests=40, num_tokens=10)
+    rng = random.Random(1)
+    rng.shuffle(requests)
+    for request in requests:
+        queue.add_request(request)
+
+    original = list(queue)
+    removed = original[17]
+    queue.remove_request(removed)
+
+    assert list(queue) == [request for request in original if request is not removed]
+    assert len(queue._request_indices) == len(queue)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: bounded cache-affinity admission with aging.
+# ---------------------------------------------------------------------------
+
+
+def _seed_phase3_prefix(scheduler: Scheduler) -> None:
+    seed = _make_retention_request("seed", [10] * 48, max_tokens=1)
+    scheduler.add_request(seed)
+    output = scheduler.schedule()
+    scheduler.update_from_output(output, make_output(scheduler))
+    assert not scheduler.running
+
+
+def _make_phase3_candidates() -> tuple[Request, Request]:
+    cold = _make_retention_request("cold", [20] * 64)
+    warm = _make_retention_request("warm", [10] * 48 + [30] * 16)
+    return cold, warm
+
+
+def test_cache_affinity_prefers_less_remaining_prefill():
+    scheduler = create_scheduler(
+        max_num_seqs=1,
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    _seed_phase3_prefix(scheduler)
+    cold, warm = _make_phase3_candidates()
+    scheduler.add_request(cold)
+    scheduler.add_request(warm)
+
+    output = scheduler.schedule()
+
+    assert [request.req_id for request in output.scheduled_new_reqs] == ["warm"]
+    assert scheduler.waiting.peek_request() is cold
+    assert warm.num_tokens - output.num_scheduled_tokens["warm"] == 48
+    assert scheduler.kv_admission_stats.selection_calls == 1
+    assert scheduler.kv_admission_stats.candidates == 2
+    assert scheduler.kv_admission_stats.candidate_probes == 2
+    assert scheduler.kv_admission_stats.candidates_with_hits == 1
+    assert scheduler.kv_admission_stats.reordered == 1
+    assert scheduler.kv_admission_stats.aged_selections == 0
+    assert scheduler.kv_admission_stats.selected_cached_tokens == 48
+    assert scheduler.kv_admission_stats.admitted == 1
+    assert scheduler.kv_admission_stats.admitted_reordered == 1
+    assert scheduler.kv_admission_stats.admitted_aged == 0
+    assert scheduler.kv_admission_stats.admitted_cached_tokens == 48
+    flushed_stats = scheduler.make_stats()
+    assert flushed_stats is not None
+    assert flushed_stats.kv_admission_stats.selection_calls == 1
+    assert scheduler.kv_admission_stats.selection_calls == 0
+
+
+def test_cache_affinity_respects_user_priority(tmp_path):
+    scheduler = create_scheduler_with_priority(
+        model=create_local_opt_config(tmp_path),
+        max_num_seqs=1,
+        max_num_batched_tokens=128,
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    _seed_phase3_prefix(scheduler)
+    important, warm = _make_phase3_candidates()
+    important.priority = 0
+    warm.priority = 1
+    scheduler.add_request(warm)
+    scheduler.add_request(important)
+
+    output = scheduler.schedule()
+
+    assert [request.req_id for request in output.scheduled_new_reqs] == ["cold"]
+    assert scheduler.kv_admission_stats.selection_calls == 0
+    assert scheduler.waiting.peek_request() is warm
+
+
+def test_cache_affinity_does_not_cross_window():
+    scheduler = create_scheduler(
+        max_num_seqs=1,
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+        kv_aware_candidate_window=2,
+    )
+    _seed_phase3_prefix(scheduler)
+    first = _make_retention_request("first", [20] * 64)
+    second = _make_retention_request("second", [21] * 64)
+    outside = _make_retention_request("outside", [10] * 48 + [30] * 16)
+    for request in (first, second, outside):
+        scheduler.add_request(request)
+
+    peeked = []
+    real_peek = scheduler.kv_cache_manager.peek_computed_blocks
+
+    def peek_spy(request):
+        peeked.append(request.request_id)
+        return real_peek(request)
+
+    scheduler.kv_cache_manager.peek_computed_blocks = peek_spy
+    output = scheduler.schedule()
+
+    assert [request.req_id for request in output.scheduled_new_reqs] == ["first"]
+    assert peeked == ["first", "second"]
+    assert outside in scheduler.waiting
+
+
+def test_cache_affinity_aging_prevents_starvation(monkeypatch):
+    scheduler = create_scheduler(
+        max_num_seqs=1,
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+        kv_aware_aging_threshold_s=5.0,
+    )
+    _seed_phase3_prefix(scheduler)
+    cold, warm = _make_phase3_candidates()
+    cold.arrival_time = 90.0
+    warm.arrival_time = 99.0
+    scheduler.add_request(cold)
+    scheduler.add_request(warm)
+    monkeypatch.setattr(scheduler_module.time, "time", lambda: 100.0)
+
+    output = scheduler.schedule()
+
+    assert [request.req_id for request in output.scheduled_new_reqs] == ["cold"]
+    assert scheduler.waiting.peek_request() is warm
+    assert scheduler.kv_admission_stats.aged_selections == 1
+
+
+def test_default_admission_does_not_probe_prefix():
+    scheduler = create_scheduler(
+        max_num_seqs=1,
+        enable_prefix_caching=True,
+        admission_policy="default",
+    )
+    first, second = _make_phase3_candidates()
+    scheduler.add_request(first)
+    scheduler.add_request(second)
+    scheduler.kv_cache_manager.peek_computed_blocks = Mock(
+        side_effect=AssertionError("default admission must not speculate")
+    )
+
+    output = scheduler.schedule()
+
+    assert [request.req_id for request in output.scheduled_new_reqs] == ["cold"]
+    assert scheduler.kv_admission_stats.selection_calls == 0
+
+
+def test_failed_affinity_admission_preserves_queue():
+    scheduler = create_scheduler(
+        max_num_seqs=1,
+        enable_prefix_caching=True,
+        admission_policy="cache_affinity",
+    )
+    _seed_phase3_prefix(scheduler)
+    cold, warm = _make_phase3_candidates()
+    scheduler.add_request(cold)
+    scheduler.add_request(warm)
+    scheduler.kv_cache_manager.allocate_slots = Mock(return_value=None)
+    scheduler.kv_cache_manager.record_prefix_cache_stats = Mock()
+
+    scheduler.schedule()
+
+    allocated_request = scheduler.kv_cache_manager.allocate_slots.call_args.args[0]
+    assert allocated_request is warm
+    assert scheduler.waiting.peek_n(2) == [cold, warm]
+    assert len(scheduler.waiting) == 2
+    scheduler.kv_cache_manager.record_prefix_cache_stats.assert_not_called()

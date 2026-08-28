@@ -1,7 +1,10 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1 功能验收完成；Phase 2 尚未开始。详见
-> [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)。
+> 状态：Phase 1、Phase 2、Phase 3 correctness Gate 已完成；Phase 2 性能
+> Gate 未通过，Phase 3 初步性能信号偏正但尚未做多轮统计验收。详见
+> [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
+> [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
+> [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -524,7 +527,7 @@ phase lands:
 | 2 | `prefix_cache_eviction_policy: Literal["lru", "waiting_queue_aware"]` | `lru` | enables soft retention |
 | 2/3 | `kv_aware_candidate_window: int` | 8 (tuned from the proposed 16) | common upper bound for retention/admission candidates |
 | 3 | `admission_policy: Literal["default", "cache_affinity"]` | `default` | enables bounded cache-affinity ordering |
-| 3 | `kv_aware_aging_threshold_s: float` | benchmarked non-negative value | promotes starved same-tier candidates |
+| 3 | `kv_aware_aging_threshold_s: float` | 30.0 s（暂定） | promotes starved same-tier candidates |
 
 Do not expose block-selection internals or feature-cache implementation details
 as CLI flags. If review finds `preemption_policy` too narrow a name for its
@@ -904,6 +907,14 @@ using real admission lookup as a probe.
 ## I. Phase 3+ integration points
 
 ### I.1 Phase 3: bounded cache-affinity admission + aging
+
+> 实施状态（2026-08-28）：已完成并通过 Gate 3 correctness。实现采用
+> `W=8`、aging `30 s`，default fast path 不探测 prefix；Priority top-W
+> 使用 heap frontier 和冻结入队键，中间候选为 `O(log N)` 删除。单次固定工作量
+> A/B 显示压力场景吞吐约 `+1.68%`、TTFT mean 约 `-5.75%`，无抢占场景
+> wall time 约 `-0.08%`；但压力场景 prefix hits 约 `-2.61%` 且 probe 放大
+> 明显，性能 Gate 留待 Phase 4 优化和多轮配对复测。完整证据见
+> `PHASE3_IMPLEMENTATION_REPORT_CODEX.md`。
 
 Add only after Gate 2.
 

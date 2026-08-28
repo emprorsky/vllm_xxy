@@ -18,6 +18,7 @@ resetting computed tokens, re-queueing) remains in the Scheduler and queues.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from vllm.v1.core.sched.request_queue import SchedulingPolicy
@@ -29,6 +30,19 @@ if TYPE_CHECKING:
 RequestOrderKey = tuple[Any, ...]
 
 
+@dataclass(frozen=True)
+class AdmissionCandidate:
+    """Read-only admission features for one bounded waiting candidate."""
+
+    request: Request
+    base_position: int
+    local_cached_tokens: int
+
+    @property
+    def remaining_prefill_tokens(self) -> int:
+        return max(self.request.num_tokens - self.local_cached_tokens, 0)
+
+
 class SchedulingDecisionPolicy(Protocol):
     """Read-only scheduling decisions shared by Scheduler and its queues."""
 
@@ -36,12 +50,20 @@ class SchedulingDecisionPolicy(Protocol):
 
     def waiting_order_key(self, request: Request) -> RequestOrderKey: ...
 
+    def choose_admission(
+        self,
+        candidates: list[AdmissionCandidate],
+        now_s: float,
+        aging_threshold_s: float,
+    ) -> AdmissionCandidate: ...
+
 
 class DefaultSchedulingDecisionPolicy:
     """Baseline victim selection, identical to base commit."""
 
-    def __init__(self, policy: SchedulingPolicy) -> None:
+    def __init__(self, policy: SchedulingPolicy, admission_policy: str) -> None:
         self.policy = policy
+        self.admission_policy = admission_policy
 
     def select_preemption_victim(self, running: list[Request]) -> Request:
         if self.policy == SchedulingPolicy.PRIORITY:
@@ -57,6 +79,35 @@ class DefaultSchedulingDecisionPolicy:
             request.arrival_time,
             request.request_id,
             id(request),
+        )
+
+    def choose_admission(
+        self,
+        candidates: list[AdmissionCandidate],
+        now_s: float,
+        aging_threshold_s: float,
+    ) -> AdmissionCandidate:
+        """Choose within one bounded, same-priority candidate window."""
+        if not candidates:
+            raise ValueError("admission candidates must not be empty")
+        if self.admission_policy != "cache_affinity":
+            return candidates[0]
+
+        aged = [
+            candidate
+            for candidate in candidates
+            if now_s - candidate.request.arrival_time >= aging_threshold_s
+        ]
+        if aged:
+            return min(aged, key=lambda candidate: candidate.base_position)
+
+        return min(
+            candidates,
+            key=lambda candidate: (
+                candidate.request.num_preemptions == 0,
+                candidate.remaining_prefill_tokens,
+                candidate.base_position,
+            ),
         )
 
 
@@ -110,9 +161,11 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
 
 
 def create_decision_policy(
-    policy: SchedulingPolicy, preemption_policy: str
+    policy: SchedulingPolicy,
+    preemption_policy: str,
+    admission_policy: str = "default",
 ) -> SchedulingDecisionPolicy:
     """Factory: ``recompute_aware`` opts into the KV-aware policy."""
     if preemption_policy == "recompute_aware":
-        return RecomputeAwareSchedulingDecisionPolicy(policy)
-    return DefaultSchedulingDecisionPolicy(policy)
+        return RecomputeAwareSchedulingDecisionPolicy(policy, admission_policy)
+    return DefaultSchedulingDecisionPolicy(policy, admission_policy)

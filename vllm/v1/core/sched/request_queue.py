@@ -84,6 +84,11 @@ class RequestQueue(ABC):
         """Peek at the first n requests in queue order without removal."""
         pass
 
+    @abstractmethod
+    def peek_n_with_keys(self, n: int) -> list[tuple[tuple[Any, ...], Request]]:
+        """Peek at requests and their captured queue-order keys."""
+        pass
+
 
 class FCFSRequestQueue(deque[Request], RequestQueue):
     """A first-come-first-served queue that supports deque operations."""
@@ -149,6 +154,9 @@ class FCFSRequestQueue(deque[Request], RequestQueue):
     def peek_order_key(self) -> tuple[Any, ...]:
         raise NotImplementedError("FCFS queues do not expose a comparable order key")
 
+    def peek_n_with_keys(self, n: int) -> list[tuple[tuple[Any, ...], Request]]:
+        raise NotImplementedError("FCFS queues do not expose comparable order keys")
+
 
 @dataclass(order=True, frozen=True)
 class _PriorityQueueItem:
@@ -164,6 +172,7 @@ class PriorityRequestQueue(RequestQueue):
     ) -> None:
         self._order_key = order_key or self._default_order_key
         self._heap: list[_PriorityQueueItem] = []
+        self._request_indices: dict[int, int] = {}
 
     @staticmethod
     def _default_order_key(request: Request) -> tuple[Any, ...]:
@@ -181,16 +190,17 @@ class PriorityRequestQueue(RequestQueue):
 
     def add_request(self, request: Request) -> None:
         """Add a request to the queue according to priority policy."""
-        heapq.heappush(
-            self._heap,
-            _PriorityQueueItem(self._order_key(request), request),
-        )
+        item = _PriorityQueueItem(self._order_key(request), request)
+        self._heap.append(item)
+        index = len(self._heap) - 1
+        self._request_indices[id(request)] = index
+        self._sift_up(index)
 
     def pop_request(self) -> Request:
         """Pop a request from the queue according to priority policy."""
         if not self._heap:
             raise IndexError("pop from empty heap")
-        return heapq.heappop(self._heap).request
+        return self._pop_at(0)
 
     def peek_request(self) -> Request:
         """Peek at the next request in the queue without removing it."""
@@ -205,15 +215,20 @@ class PriorityRequestQueue(RequestQueue):
         popped nodes are pushed, so the cost is O(n log n) time and O(n)
         temporary space instead of copying the whole heap.
         """
+        return [request for _, request in self.peek_n_with_keys(n)]
+
+    def peek_n_with_keys(self, n: int) -> list[tuple[tuple[Any, ...], Request]]:
+        """Peek at requests with the immutable keys captured on enqueue."""
         if n <= 0 or not self._heap:
             return []
-        result: list[Request] = []
+        result: list[tuple[tuple[Any, ...], Request]] = []
         # Frontier of (key, heap_index); the index breaks key ties the same
         # way the heap array itself does.
         frontier: list[tuple[tuple[Any, ...], int]] = [(self._heap[0].key, 0)]
         while frontier and len(result) < n:
             _, i = heapq.heappop(frontier)
-            result.append(self._heap[i].request)
+            item = self._heap[i]
+            result.append((item.key, item.request))
             for child in (2 * i + 1, 2 * i + 2):
                 if child < len(self._heap):
                     heapq.heappush(frontier, (self._heap[child].key, child))
@@ -236,22 +251,17 @@ class PriorityRequestQueue(RequestQueue):
 
     def remove_request(self, request: Request) -> None:
         """Remove a specific request from the queue."""
-        index = next(
-            (i for i, item in enumerate(self._heap) if item.request is request),
-            None,
-        )
+        index = self._request_indices.get(id(request))
         if index is None:
             raise ValueError("request is not in queue")
-        del self._heap[index]
-        heapq.heapify(self._heap)
+        self._pop_at(index)
 
     def remove_requests(self, requests: Iterable[Request]) -> None:
         """Remove multiple specific requests from the queue."""
-        requests_to_remove = requests if isinstance(requests, set) else set(requests)
-        self._heap = [
-            item for item in self._heap if item.request not in requests_to_remove
-        ]
-        heapq.heapify(self._heap)
+        for request in requests:
+            index = self._request_indices.get(id(request))
+            if index is not None:
+                self._pop_at(index)
 
     def __bool__(self) -> bool:
         """Check if queue has any requests."""
@@ -266,6 +276,53 @@ class PriorityRequestQueue(RequestQueue):
         heap_copy = self._heap[:]
         while heap_copy:
             yield heapq.heappop(heap_copy).request
+
+    def _swap(self, first: int, second: int) -> None:
+        self._heap[first], self._heap[second] = (
+            self._heap[second],
+            self._heap[first],
+        )
+        self._request_indices[id(self._heap[first].request)] = first
+        self._request_indices[id(self._heap[second].request)] = second
+
+    def _sift_up(self, index: int) -> None:
+        while index > 0:
+            parent = (index - 1) // 2
+            if not self._heap[index] < self._heap[parent]:
+                break
+            self._swap(index, parent)
+            index = parent
+
+    def _sift_down(self, index: int) -> None:
+        size = len(self._heap)
+        while True:
+            left = 2 * index + 1
+            if left >= size:
+                return
+            right = left + 1
+            smallest = (
+                right
+                if right < size and self._heap[right] < self._heap[left]
+                else left
+            )
+            if not self._heap[smallest] < self._heap[index]:
+                return
+            self._swap(index, smallest)
+            index = smallest
+
+    def _pop_at(self, index: int) -> Request:
+        removed = self._heap[index]
+        last = self._heap.pop()
+        del self._request_indices[id(removed.request)]
+        if index < len(self._heap):
+            self._heap[index] = last
+            self._request_indices[id(last.request)] = index
+            parent = (index - 1) // 2
+            if index > 0 and self._heap[index] < self._heap[parent]:
+                self._sift_up(index)
+            else:
+                self._sift_down(index)
+        return removed.request
 
 
 def create_request_queue(
