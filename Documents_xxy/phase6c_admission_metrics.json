@@ -1,0 +1,44 @@
+{
+  "control_1": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 201664,
+    "preemptions": 657
+  },
+  "treatment_1": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 200832,
+    "preemptions": 676,
+    "selection_calls": 9111,
+    "candidates": 71723,
+    "candidate_probes": 71723,
+    "candidates_with_hits": 53821,
+    "reordered": 3218,
+    "aged_selections": 2763,
+    "selected_cached_tokens": 8265168,
+    "admitted": 898,
+    "admitted_reordered": 592,
+    "admitted_aged": 137,
+    "admitted_cached_tokens": 794432
+  },
+  "treatment_2": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 200000,
+    "preemptions": 726,
+    "selection_calls": 9418,
+    "candidates": 72886,
+    "candidate_probes": 72886,
+    "candidates_with_hits": 60205,
+    "reordered": 3297,
+    "aged_selections": 3700,
+    "selected_cached_tokens": 8718512,
+    "admitted": 942,
+    "admitted_reordered": 651,
+    "admitted_aged": 199,
+    "admitted_cached_tokens": 828640
+  },
+  "control_2": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 201664,
+    "preemptions": 552
+  }
+}

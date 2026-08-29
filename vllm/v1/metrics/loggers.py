@@ -682,6 +682,27 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             "zero_progress_selections": (
                 "Number of selections with zero immediate reclaimable blocks."
             ),
+            "changed_selections": (
+                "Number of victims changed from recompute-aware ordering."
+            ),
+            "baseline_reclaimable_blocks": (
+                "Total immediate blocks predicted for recompute-aware victims."
+            ),
+            "reclaimability_gain_blocks": (
+                "Additional immediate blocks from changed victim selections."
+            ),
+            "selected_computed_tokens": (
+                "Computed-token cost of reclaimability-aware victims."
+            ),
+            "baseline_computed_tokens": (
+                "Computed-token cost of counterfactual recompute-aware victims."
+            ),
+            "additional_recompute_tokens": (
+                "Positive computed-token cost added by changed selections."
+            ),
+            "avoided_recompute_tokens": (
+                "Positive computed-token cost avoided by changed selections."
+            ),
         }
         self.counter_kv_preemption = {
             field: create_metric_per_engine(

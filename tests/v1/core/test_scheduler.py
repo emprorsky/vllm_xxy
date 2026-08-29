@@ -6887,6 +6887,13 @@ def test_reclaimable_preemption_uses_immediate_progress_and_records_stats():
     assert stats.candidate_estimates == 2
     assert stats.reclaimable_blocks == 2
     assert stats.selected_reclaimable_blocks == 2
+    assert stats.baseline_reclaimable_blocks == 0
+    assert stats.reclaimability_gain_blocks == 2
+    assert stats.changed_selections == 1
+    assert stats.selected_computed_tokens == 1000
+    assert stats.baseline_computed_tokens == 10
+    assert stats.additional_recompute_tokens == 990
+    assert stats.avoided_recompute_tokens == 0
     assert stats.sufficient_selections == 1
     assert stats.zero_progress_selections == 0
 
@@ -6922,6 +6929,37 @@ def test_reclaimable_preemption_falls_back_when_free_would_be_deferred():
     assert stats.reclaimable_blocks == 0
     assert stats.sufficient_selections == 0
     assert stats.zero_progress_selections == 1
+    assert stats.changed_selections == 0
+    assert stats.selected_computed_tokens == 10
+    assert stats.baseline_computed_tokens == 10
+    assert stats.additional_recompute_tokens == 0
+    assert stats.avoided_recompute_tokens == 0
+
+
+def test_reclaimable_preemption_records_avoided_recompute_cost():
+    scheduler = create_scheduler(preemption_policy="reclaimable_aware")
+    resumed, fresh = create_requests(
+        num_requests=2,
+        num_tokens=16,
+        req_ids=["resumed", "fresh"],
+    )
+    resumed.num_computed_tokens = 10
+    resumed.num_preemptions = 1
+    fresh.num_computed_tokens = 1000
+    scheduler.running = [resumed, fresh]
+    scheduler.kv_cache_manager.estimate_reclaimable_blocks = Mock(
+        side_effect=lambda request: 1 if request is resumed else 0
+    )
+
+    victim = scheduler._select_reclaimable_preemption_victim(1)
+
+    assert victim is resumed
+    stats = scheduler.kv_preemption_stats
+    assert stats.changed_selections == 1
+    assert stats.selected_computed_tokens == 10
+    assert stats.baseline_computed_tokens == 1000
+    assert stats.additional_recompute_tokens == 0
+    assert stats.avoided_recompute_tokens == 990
 
 
 def test_reclaimable_preemption_does_not_create_feature_context():

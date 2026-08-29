@@ -8,6 +8,13 @@
 >
 > 结论：Gate 3 正确性通过；性能结果为“压力场景延迟/吞吐偏正、无抢占场景无明显开销”，但只有单次配对数据，且压力场景 prefix hit 略降，因此暂不宣称总体性能 Gate 通过。
 
+> **Phase 6c 更新（2026-08-29）**：在关闭 retention 混杂的官方 `vllm bench
+> serve` 中完成两对反向顺序 A/B。cache-affinity 吞吐两对分别 +6.933%/+1.659%，
+> 均值 +4.286%，并有 1,243 次成功队头重排；mean TPOT -9.190%。但 TTFT
+> mean/p99 均值分别退化 44.0%/59.0%，因此确认为有收益的实验性 throughput
+> mode，而非全面性能优化。详见
+> [`PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md`](PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md)。
+
 ## 1. 本阶段解决什么问题
 
 Phase 1 决定“KV 不够时抢占谁”，Phase 2 决定“分配新块时优先保留哪些等待请求可能复用的缓存”。Phase 3 处理下一层问题：

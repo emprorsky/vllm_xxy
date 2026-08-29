@@ -1,0 +1,34 @@
+{
+  "aging_5s": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 200704,
+    "preemptions": 739,
+    "selection_calls": 9726,
+    "candidates": 74647,
+    "candidate_probes": 74647,
+    "candidates_with_hits": 65373,
+    "reordered": 200,
+    "aged_selections": 9428,
+    "selected_cached_tokens": 9164128,
+    "admitted": 956,
+    "admitted_reordered": 128,
+    "admitted_aged": 774,
+    "admitted_cached_tokens": 842656
+  },
+  "aging_10s": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 200704,
+    "preemptions": 621,
+    "selection_calls": 9322,
+    "candidates": 73244,
+    "candidate_probes": 73244,
+    "candidates_with_hits": 64043,
+    "reordered": 527,
+    "aged_selections": 8415,
+    "selected_cached_tokens": 8586736,
+    "admitted": 834,
+    "admitted_reordered": 133,
+    "admitted_aged": 619,
+    "admitted_cached_tokens": 739472
+  }
+}

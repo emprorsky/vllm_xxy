@@ -8,6 +8,13 @@
 
 ## 1. 结论
 
+> **Phase 6b 因果复核修正（2026-08-29）**：新增 counterfactual victim telemetry
+> 证明官方 1250/1000-block 两轮分别 779/655 次决策均为 0 次改选。因此本报告记录的
+> `+2.091%` 与 `-0.596%` 是 run-level 差异，不能归因于 Phase 5c，也不能据此判断
+> KV-budget 有效区间。最终结论以
+> [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)
+> 为准。
+
 Phase 6 measurement Gate 已完成，得到两个需要同时保留的结论。
 
 第一，Phase 5c 的 CPU 成本可测但不是当前 serving 收益/退化的主因：
@@ -28,9 +35,8 @@ Phase 6 measurement Gate 已完成，得到两个需要同时保留的结论。
 - 两个 budget 均为 192/192 成功，input/output token 总数完全一致；
 - TTFT、TPOT、ITL 和 E2EL 分位数方向混合，不能宣称全面延迟改善。
 
-所以 Phase 6 的最终判断是：Phase 5c 的 1250-block 吞吐收益被标准工具复现，
-但跨 KV budget 的 generalized performance Gate 未通过。简历可以保留限定场景的
-`+2.8%` reverse-order A/B 和标准工具 `+2.1%` 复现，不能写成普适提升。
+Phase 6b 后的最终判断是：CPU 成本测量仍然有效；标准工具复现了 run-level 波动，
+没有复现可归因于 Phase 5c 的吞吐收益。跨 KV budget performance Gate 未通过。
 
 ## 2. Scheduler CPU microbenchmark
 
@@ -126,8 +132,8 @@ profiler 给出的精确累计 CPU time。
 - T candidate estimates：21,790，约 26.7 candidates/shortfall；
 - T sufficient selections：815，zero-progress selections：0。
 
-因此 1250 blocks 支持吞吐改善，但 preemption 数和 TTFT p99 反而上升，不能把
-吞吐收益解释成“每个内部指标都更好”。
+Phase 6b 证明这一轮的实际 victim 与 recompute baseline 完全相同，因此这里的吞吐、
+preemption 和 TTFT 差异都不能归因于 reclaimable victim ranking。
 
 ### 3.3 1000-block 结果
 
@@ -156,9 +162,9 @@ profiler 给出的精确累计 CPU time。
 T 中 644 次 shortfall 全部为 1 block，15,770 次 candidate estimate，约 24.5
 candidates/shortfall；644 次选择均被预测为 sufficient，zero-progress 为 0。
 
-1000 blocks 下虽然抢占更少、prefix hits 更多，吞吐和 TPOT 仍然退化。这证明
-preemption count 不能替代 wasted recompute token cost；选择一个立即可回收但
-计算进度更深的 victim，可能比多次便宜抢占造成更大重算成本和不同的后续队列轨迹。
+Phase 6 当时把 1000-block 反转推测为 reclaimability/recompute cost 冲突。Phase 6b
+直接否定了该解释：644 次原 run 未保存反事实信息，但新 repeat 的 655 次选择全部
+与 baseline 相同，additional/avoided recompute 均为 0。原解释应撤销。
 
 原始产物：
 
@@ -172,7 +178,7 @@ preemption count 不能替代 wasted recompute token cost；选择一个立即�
 Phase 6 不修改生产策略，只完成测量与边界判断：
 
 - CPU measurement Gate：通过；开销线性、可解释，在实际候选规模下不是主要瓶颈；
-- standard serving reproduction：1250 blocks 通过吞吐复现；
+- standard serving reproduction：只复现了 run-level 数值差异，没有算法因果激活；
 - cross-budget generalized performance Gate：未通过；1000 blocks 出现小幅负收益；
 - latency Gate：未通过；不同分位数和 budget 的方向混合。
 
@@ -187,9 +193,8 @@ Phase 6 不修改生产策略，只完成测量与边界判断：
 5. 只有证据明确后，再设计 cost-aware feasibility，而不是在结果上调 magic
    threshold。
 
-简历建议表述：
+本报告原简历表述作废。更新建议：
 
-> 为 vLLM V1 实现 refcount-aware KV 抢占策略及完整可观测性；通过单核
-> microbenchmark 量化 Scheduler 决策成本，并用官方 `vllm bench serve` 在 RTX
-> 4090/Qwen2.5-7B、1250-block 压力场景复现吞吐 +2.1%；进一步发现 1000-block
-> 下收益反转，定位到 reclaimability 与 recompute cost 的策略边界。
+> 为 vLLM V1 实现 refcount-aware KV 抢占与反事实可观测性；通过单核
+> microbenchmark 量化 Scheduler 决策成本，并在官方 `vllm bench serve` 中识别
+> one-block shortfall 导致的策略退化，排除约 2% run-level 波动的错误性能归因。

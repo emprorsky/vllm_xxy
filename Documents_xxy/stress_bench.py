@@ -132,6 +132,13 @@ async def fetch_metrics(session: aiohttp.ClientSession) -> dict:
                 "vllm:kv_preemption_selected_reclaimable_blocks_total",
                 "vllm:kv_preemption_sufficient_selections_total",
                 "vllm:kv_preemption_zero_progress_selections_total",
+                "vllm:kv_preemption_changed_selections_total",
+                "vllm:kv_preemption_baseline_reclaimable_blocks_total",
+                "vllm:kv_preemption_reclaimability_gain_blocks_total",
+                "vllm:kv_preemption_selected_computed_tokens_total",
+                "vllm:kv_preemption_baseline_computed_tokens_total",
+                "vllm:kv_preemption_additional_recompute_tokens_total",
+                "vllm:kv_preemption_avoided_recompute_tokens_total",
                 "vllm:scheduling_feature_prefix_requests_total",
                 "vllm:scheduling_feature_prefix_resolutions_total",
                 "vllm:scheduling_feature_prefix_cache_hits_total",
@@ -434,6 +441,27 @@ async def main():
             ),
             "zero_progress_selections": delta(
                 "vllm:kv_preemption_zero_progress_selections_total"
+            ),
+            "changed_selections": delta(
+                "vllm:kv_preemption_changed_selections_total"
+            ),
+            "baseline_reclaimable_blocks": delta(
+                "vllm:kv_preemption_baseline_reclaimable_blocks_total"
+            ),
+            "reclaimability_gain_blocks": delta(
+                "vllm:kv_preemption_reclaimability_gain_blocks_total"
+            ),
+            "selected_computed_tokens": delta(
+                "vllm:kv_preemption_selected_computed_tokens_total"
+            ),
+            "baseline_computed_tokens": delta(
+                "vllm:kv_preemption_baseline_computed_tokens_total"
+            ),
+            "additional_recompute_tokens": delta(
+                "vllm:kv_preemption_additional_recompute_tokens_total"
+            ),
+            "avoided_recompute_tokens": delta(
+                "vllm:kv_preemption_avoided_recompute_tokens_total"
             ),
         },
         "scheduling_features": {

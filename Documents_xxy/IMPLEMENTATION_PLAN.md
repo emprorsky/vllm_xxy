@@ -1,10 +1,16 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1 至 Phase 5c correctness Gate 已完成，Phase 6 measurement Gate
-> 已完成；Phase 5c 在固定 RTX 4090
-> 高 KV 压力场景的两对反向顺序 A/B 中，吞吐均值提升 2.797%、wall time
-> 降低 2.722%、抢占次数均值降低 8.258%，通过当前场景的性能 Gate；Phase 2
-> 性能 Gate 未通过，Phase 3/4/5a 的性能信号尚未完成稳定统计验收。详见
+> 状态：Phase 1 至 Phase 5c correctness Gate、Phase 6 measurement Gate 和 Phase
+> 6b causal diagnostic Gate 已完成。Phase 6b 在三个 workload、1,922 次真实抢占
+> 决策中记录到 `changed_selections=0`，证明 Phase 5c 在当前 one-block shortfall
+> 场景退化为 `recompute_aware`；此前 `+2.8%/+2.1%` run-level 差异不能归因于
+> 算法，Phase 5c performance Gate 更正为未通过。Phase 2 性能 Gate 未通过，
+> Phase 6c 随后隔离验证 Phase 3 cache-affinity：两对官方反向顺序 A/B 吞吐均值
+> +4.286%、mean TPOT -9.190%，且 1,243 次成功重排证明机制激活；但 TTFT
+> mean/p99 退化 44.0%/59.0%，当前只验收为 opt-in throughput mode。Phase 6d
+> 单轮筛选表明 aging 10s 是待 paired confirmation 的折中候选（+3.648% throughput、
+> +29.060% TTFT p99），5s 则基本消除吞吐收益。Phase 2/5a
+> 的性能信号尚未完成稳定统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
 > [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)、
@@ -12,7 +18,10 @@
 > [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE5B_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5B_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)、
-> [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)。
+> [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)、
+> [`PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md`](PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md)、
+> [`PHASE6D_AGING_SWEEP_REPORT_CODEX.md`](PHASE6D_AGING_SWEEP_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1076,16 +1085,16 @@ deferred-free fallback.
 
 ### I.5 Phase 5c: allocation-shortfall-aware victim feasibility
 
-> 实施状态（2026-08-29）：correctness Gate 和当前固定压力场景 performance
-> Gate 已完成。新增独立 `reclaimable_aware` 实验策略，只在真实 allocation
+> 实施状态（2026-08-29，Phase 6b 修正）：correctness Gate 已完成，当前 workload
+> activation/performance Gate 未通过。新增独立 `reclaimable_aware` 实验策略，只在真实 allocation
 > failure 后读取精确 physical-block shortfall，并在最差 user-priority tier 内
 > 优先选择能立即减少 shortfall 的 victim；无法提供立即容量时严格回退到
 > `recompute_aware`。deferred-free 候选在 fence 完成前记为 0，不把 Phase 5b
-> eventual estimate 误当成立即容量。两对反向顺序 A/B 的吞吐变化分别为
-> +2.886% 和 +2.709%，均值 +2.797%；抢占均值 -8.258%，prefix hits 均值
-> 持平。TTFT mean/p99 基本持平，因此结论限定在吞吐和抢占效率，不宣称全面
-> 延迟改善。详见
-> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)。
+> eventual estimate 误当成立即容量。旧 A/B 曾测得吞吐均值 +2.797%，但 Phase 6b
+> 在官方 1250/1000-block 与自定义 1250-block 共 1,922 次决策中证明 0 次改选，
+> 所以该差异只能视为运行波动，不能作为策略收益。详见
+> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)
+> 和 [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)。
 
 Implemented victim hierarchy:
 
@@ -1102,24 +1111,33 @@ allocation. Default and `recompute_aware` paths do not collect the shortfall or
 scan candidate block tables. Prometheus counters expose activation, candidate
 estimates, deferred candidates, selected capacity and zero-progress fallback.
 
-The current workload produced only one-block deficits. The measured gain is
-therefore evidence for filtering zero-immediate-progress victims under this
-pressure shape, not proof that larger-deficit ranking is universally optimal.
-Before broadening the claim, repeat across another model/pressure shape and add
-Scheduler CPU decision-cost measurements.
+The current workloads produced only one-block deficits. Counterfactual telemetry
+showed that every recompute-aware baseline victim already made immediate progress,
+so the policy changed zero selections. The earlier measured throughput differences
+are not evidence for this ranking. Re-evaluate only on a real multi-block-shortfall
+workload.
 
 ### I.6 Phase 6: Scheduler CPU performance
 
-> 实施状态（2026-08-29）：measurement Gate 已完成。真实
+> 实施状态（2026-08-29，Phase 6b 修正）：CPU measurement Gate 已完成。真实
 > `Request + KVCacheManager + refcount estimator` 单核 microbenchmark 中，34
 > blocks/candidate 下 `reclaimable_aware` 单次决策在 N=8/16/64/256 分别为
 > 120.264/246.947/983.002/3807.596 us，近似线性；按 Phase 5c 实际约 28 个
 > candidates、约 506 次 shortfall 估算，累计约 0.22 s，仅约 serving wall
-> time 的 0.11%。官方 `vllm bench serve` 在 1250 blocks 复现吞吐 +2.091%，
-> 但 1000 blocks 下为 -0.596%；不同 latency/preemption 指标方向混合。因此 CPU
-> overhead 可接受，但跨 KV budget 的 generalized performance Gate 未通过，
-> 不应继续扩大“稳定 +2.8%”的适用范围。详见
-> [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)。
+> time 的 0.11%。官方 `vllm bench serve` 曾测得 1250 blocks +2.091%、1000 blocks
+> -0.596%，但新增反事实 telemetry 证明两档分别 779/655 次决策均为 0 次改选，
+> 这些差异不能归因于算法。CPU overhead 可接受，但 performance Gate 未通过。
+> 详见 [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)
+> 和 [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)。
+
+### I.6b Phase 6b: counterfactual causal diagnostics
+
+> 实施状态（2026-08-29）：完成。每次 reclaimable decision 同步计算不带
+> reclaimability 的 baseline victim，并记录 selection change、capacity gain 与
+> computed-token cost delta。官方 1250/1000-block 和自定义 1250-block 三个
+> workload 共 1,922 次 decision、0 次改选。结果证明当前 Phase 5c 目标函数在
+> one-block shortfall 下没有区分度；保留实验开关与观测，暂停性能宣称和 heuristic
+> 叠加。下一条性能路线必须先证明实际改变行为，再进行 A/B 归因。
 
 Measure before optimizing. Use request counts 1/8/16/64/256 and report:
 
@@ -1138,6 +1156,21 @@ Primary goals:
 - no retention resolver call without cached-block pressure.
 
 Do not keep a perf patch without repeatable evidence.
+
+### I.6c Phase 6c: admission throughput causal reproduction
+
+> 实施状态（2026-08-29）：完成。关闭 retention 混杂，以 default admission 为
+> control、cache-affinity 为 treatment，官方 1250-block `vllm bench serve` 两对
+> 反向顺序 A/B 的吞吐分别 +6.933%/+1.659%，均值 +4.286%；两轮共 1,243 次
+> successful reordered admission，证明策略真实改变行为。mean TPOT -9.190%，但
+> TTFT mean/p99 +44.0%/+59.0%，因此只定位为 opt-in throughput mode。
+
+### I.6d Phase 6d: aging trade-off screening
+
+> 实施状态（2026-08-29）：单轮筛选完成。aging 5s 相对 Phase 6c control mean 为
+> +0.275% throughput / +6.416% TTFT p99；aging 10s 为 +3.648% / +29.060%。
+> 10s 是唯一待 fresh-process paired confirmation 的 balanced 候选；在确认前不把
+> 单轮结果作为最终性能数据。
 
 ### I.7 Phase 7: optional RTX 4090 KV-write kernel
 

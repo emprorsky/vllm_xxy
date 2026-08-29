@@ -211,6 +211,13 @@ class KVPreemptionStats:
     selected_reclaimable_blocks: int = 0
     sufficient_selections: int = 0
     zero_progress_selections: int = 0
+    changed_selections: int = 0
+    baseline_reclaimable_blocks: int = 0
+    reclaimability_gain_blocks: int = 0
+    selected_computed_tokens: int = 0
+    baseline_computed_tokens: int = 0
+    additional_recompute_tokens: int = 0
+    avoided_recompute_tokens: int = 0
 
 
 @dataclass

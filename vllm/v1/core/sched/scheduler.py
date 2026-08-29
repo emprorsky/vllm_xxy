@@ -555,13 +555,30 @@ class Scheduler(SchedulerInterface):
                 stats.reclaimable_blocks += value
             return reclaimable_by_request[key]
 
+        baseline_victim = self.decision_policy.select_preemption_victim(self.running)
         victim = self.decision_policy.select_preemption_victim(
             self.running,
             allocation_shortfall_blocks=allocation_shortfall_blocks,
             reclaimable_resolver=resolve_reclaimable,
         )
         selected_reclaimable = resolve_reclaimable(victim)
+        baseline_reclaimable = resolve_reclaimable(baseline_victim)
+        selected_computed = max(victim.num_computed_tokens, 0)
+        baseline_computed = max(baseline_victim.num_computed_tokens, 0)
         stats.selected_reclaimable_blocks += selected_reclaimable
+        stats.baseline_reclaimable_blocks += baseline_reclaimable
+        stats.reclaimability_gain_blocks += max(
+            selected_reclaimable - baseline_reclaimable, 0
+        )
+        stats.changed_selections += victim is not baseline_victim
+        stats.selected_computed_tokens += selected_computed
+        stats.baseline_computed_tokens += baseline_computed
+        stats.additional_recompute_tokens += max(
+            selected_computed - baseline_computed, 0
+        )
+        stats.avoided_recompute_tokens += max(
+            baseline_computed - selected_computed, 0
+        )
         stats.sufficient_selections += (
             allocation_shortfall_blocks > 0
             and selected_reclaimable >= allocation_shortfall_blocks

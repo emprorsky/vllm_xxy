@@ -8,8 +8,16 @@
 
 ## 1. 结论
 
-Phase 5c correctness Gate 已完成，并在当前固定 RTX 4090 高 KV 压力场景通过
-performance Gate。
+> **Phase 6b 因果复核修正（2026-08-29）**：Phase 5c correctness Gate 已完成，
+> 但当前 workload activation/performance Gate 未通过。新增反事实 telemetry 在
+> 官方 1250/1000-block 和自定义 1250-block 三个 workload、合计 1,922 次决策中
+> 记录到 `changed_selections=0`。因此下文 `+2.797%` 是当时真实的 run-level A/B
+> 测量值，但不能归因于 Phase 5c，只能视为运行波动。最终结论以
+> [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)
+> 为准。
+
+Phase 5c correctness Gate 已完成。当前固定 RTX 4090 高 KV 压力场景未能激活与
+`recompute_aware` 不同的 victim selection。
 
 本阶段新增独立实验开关 `preemption_policy=reclaimable_aware`。它只在真实 KV
 allocation failure 后工作：读取本次分配缺少的精确 physical-block 数，在最差
@@ -24,9 +32,8 @@ Phase 1 的 resume protection、recompute cost 和稳定 tie-break。
 - prefix hits 两次均值完全持平；
 - TTFT mean 两次均值变化 +0.049%，TTFT p99 +0.474%，基本持平。
 
-因此可确认的结论是：在该固定高压场景中，Phase 5c 提高了输出吞吐并减少了
-抢占，没有牺牲 prefix-hit 均值；目前不能宣称它全面改善尾延迟，也不能从单卡、
-单模型、单压力形状外推为普适收益。
+Phase 6b 证明这些吞吐、抢占和 prefix-hit 差异来自不同 run 的执行轨迹，不能作为
+Phase 5c 算法效果。可确认的是策略实现、边界和观测正确；尚无 serving 性能收益证据。
 
 ## 2. 策略设计
 
@@ -195,7 +202,8 @@ passed
 每次 shortfall 都恰好是 1 block，且选中的 victim 都能提供立即容量。由于第二层
 使用 `min(reclaimable, shortfall)`，该场景实际验证的是“排除 0-progress victim，
 然后按原 recompute 规则选择”，而不是大 deficit 下对多个 reclaimable 数值的
-排序效果。这个边界必须保留在性能结论中。
+排序效果。Phase 6b 进一步直接证明原 recompute victim 本身也全部 sufficient，
+因此实际连 0-progress victim 都没有排除，488 次复跑决策中 0 次改选。
 
 原始产物：
 
@@ -210,8 +218,8 @@ Phase 5c 验收分为两层：
 
 - correctness：通过。精确 shortfall、priority 硬约束、immediate/eventual 边界、
   recompute fallback、真实抢占 mutation、CLI 和 metrics 均有回归保护；
-- performance：通过当前固定压力场景 Gate。两对 reverse-order A/B 的 throughput、
-  wall time 和 preemption 方向一致，prefix-hit 均值持平。
+- activation/performance：未通过。旧 reverse-order A/B 虽然方向一致，但 Phase 6b
+  证明策略没有改变 victim，因而不能建立吞吐差异与算法之间的因果关系。
 
 下一步不建议立刻再叠加新的调度 heuristic。优先顺序应是：
 
@@ -221,6 +229,6 @@ Phase 5c 验收分为两层：
    ranking 的适用边界；
 3. 用 `vllm bench serve` 补一套标准 serving 指标，并在另一模型或另一 KV budget
    上复现方向；
-4. 若目标是简历展示，可准确表述为“实现 refcount-aware、deferred-free-safe 的
-   allocation-shortfall victim policy；RTX 4090/Qwen2.5-7B 固定高压 reverse-order
-   A/B 中吞吐 +2.8%、抢占 -8.3%，435 项 CPU 回归通过”，不要写成普适提升。
+4. 简历不再使用“Phase 5c 吞吐 +2.8%”。可表述为实现 refcount-aware、
+   deferred-free-safe 的 allocation-shortfall victim policy，并通过反事实 telemetry
+   识别 one-block shortfall 下的策略退化与错误性能归因。
