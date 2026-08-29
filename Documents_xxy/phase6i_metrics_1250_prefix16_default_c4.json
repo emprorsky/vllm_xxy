@@ -1,0 +1,70 @@
+{
+  "captured_at": "2026-08-29T14:26:16.928381+00:00",
+  "counters": {
+    "admission_admitted": 0.0,
+    "admission_admitted_aged": 0.0,
+    "admission_admitted_reordered": 0.0,
+    "admission_aged_selections": 0.0,
+    "admission_candidate_probes": 0.0,
+    "admission_reordered": 0.0,
+    "admission_selection_calls": 0.0,
+    "generation_tokens": 245760.0,
+    "preempted_computed_tokens": 483302.0,
+    "preemptions": 407.0,
+    "prefix_cache_hits": 156800.0,
+    "prefix_cache_queries": 231366.0,
+    "prompt_tokens": 231366.0,
+    "prompt_tokens_cached": 156800.0,
+    "resume_recompute_tokens": 197286.0
+  },
+  "derived": {
+    "model_compute_tokens_per_engine_output": 33.40509841884479,
+    "prefix_cache_hit_rate": 0.6777140980092148,
+    "resume_recompute_fraction_of_local_compute": 0.7257110486588291,
+    "resume_recompute_per_preempted_computed_token": 0.40820439394002095,
+    "total_local_compute_including_resume_recompute": 271852.0,
+    "total_model_compute_tokens": 517612.0
+  },
+  "endpoint": "http://127.0.0.1:8000/metrics",
+  "engine": "0",
+  "histograms": {
+    "iteration_tokens": {
+      "count": 15495.0,
+      "mean": 20.672862213617297,
+      "sum": 320326.0
+    },
+    "request_decode_time_seconds": {
+      "count": 240.0,
+      "mean": 32.39713436535482,
+      "sum": 7775.312247685157
+    },
+    "request_inference_time_seconds": {
+      "count": 240.0,
+      "mean": 32.640148427527556,
+      "sum": 7833.635622606613
+    },
+    "request_prefill_kv_computed_tokens": {
+      "count": 240.0,
+      "mean": 310.69166666666666,
+      "sum": 74566.0
+    },
+    "request_prefill_time_seconds": {
+      "count": 240.0,
+      "mean": 0.24301406217273325,
+      "sum": 58.32337492145598
+    },
+    "request_queue_time_seconds": {
+      "count": 240.0,
+      "mean": 16.841540227329823,
+      "sum": 4041.969654559158
+    }
+  },
+  "label": "default_c4",
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "prompt_tokens_by_source": {
+    "external_kv_transfer": 0.0,
+    "local_cache_hit": 156800.0,
+    "local_compute": 74566.0
+  },
+  "schema_version": 2
+}

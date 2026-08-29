@@ -15,9 +15,9 @@
 > 未通过，因此 1250-block 收益不能概括为普遍提升。Phase 6g 的 1250-block
 > W=4 screening 为 -0.955% throughput / -8.874% TTFT p99：公平性收回但吞吐
 > 收益消失，到此停止 aging/window heuristic sweep。Phase 6h 随后固定 W=8/10s
-> 验证 16-prefix workload，首对 C→T 为 +5.632% throughput、-4.284% TTFT
-> p99、-7.398% mean TPOT，形成第二种 prefix diversity 下的初步正向证据，待反向
-> 顺序确认。Phase 2/5a
+> 验证 16-prefix workload，两对反向 A/B 吞吐分别 +5.632%/+2.758%，均值
+> +4.204%；TTFT p99 -2.235%、mean TPOT -4.070%，通过第二种 prefix diversity
+> 的泛化确认 Gate。Phase 2/5a
 > 的性能信号尚未完成稳定统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
@@ -33,7 +33,8 @@
 > [`PHASE6E_ADMISSION_CPU_REPORT_CODEX.md`](PHASE6E_ADMISSION_CPU_REPORT_CODEX.md)、
 > [`PHASE6F_KV_BUDGET_REPORT_CODEX.md`](PHASE6F_KV_BUDGET_REPORT_CODEX.md)、
 > [`PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md`](PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md)、
-> [`PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md`](PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md)。
+> [`PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md`](PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md)、
+> [`PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md`](PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1213,12 +1214,36 @@ Do not keep a perf patch without repeatable evidence.
 
 ### I.6h Phase 6h: prefix-diversity generalization
 
-> 实施状态（2026-08-29）：首对 screening 完成。保持 1250 blocks、W=8、
-> aging=10s，将 prefix 数从 8 增至 16；fresh C→T 的 output throughput
-> +5.632%、duration -5.332%、TTFT mean/p50/p99 +2.663%/-1.544%/-4.284%、
-> mean TPOT -7.398%。T1 有 82 次 successful reordered admission，机制真实激活；
-> prefix hits 比 C1 少 2,256 tokens，说明收益不是 hit counter 增加导致。当前只作为
-> 第二种 workload shape 的正向泛化 screening，需 T→C 反向第二对确认。
+> 实施状态（2026-08-29）：完成。保持 1250 blocks、W=8、aging=10s，将 prefix
+> 数从 8 增至 16；两对 fresh-process 反向 A/B 的 output throughput 分别
+> +5.632%/+2.758%，均值 +4.204%，duration -3.999%。TTFT mean/p50/p99 均值
+> -0.682%/-5.009%/-2.235%，mean/p99 TPOT -4.070%/-15.432%，ITL p99
+> +4.206%。两轮 treatment 共 163 次 successful reordered admission，机制真实
+> 激活。通过第二种 workload shape 的 paired confirmation Gate，但结果仍限定于
+> RTX 4090、Qwen2.5-7B、1250 KV blocks。
+
+### I.6i Phase 6i: mechanism attribution
+
+> 实施状态（2026-08-29）：完成。control C3 审计轮发生 423 次 preemption，
+> 但 `local_compute` 与请求级净 prefill 均为 72,470；源码确认现有指标刻意排除
+> post-preemption repeat prefill，原差值估算无效。现已在已有 stats/Prometheus
+> 通路补充 `preempted_computed_tokens` 和 `resume_recompute_tokens` 两个只读累计量；
+> 后者按恢复调度区间与旧 computed frontier 的重叠精确计数，并排除 cache hit 和
+> 原本未计算的新进度。fresh-process C4→T4 attribution 中，output throughput
+> +2.695%、TTFT mean/p99 -6.601%/-1.978%；treatment 虽多 12.531% preemption，
+> 但 resume recompute -5.523%、total local context compute -3.372%、engine outputs
+> -6.415%，估算 compute/engine-output +4.962%。证据支持收益来自更低的恢复重算成本
+> 和更好的 batch shape，而非更多首次 APC hits 或更少抢占；该单对 attribution
+> 作为 Phase 6h 两对 performance confirmation 的机制支持，不声明唯一因果路径。
+
+### I.6j Phase 6j: small-model scale boundary
+
+> 实施状态（2026-08-29）：待执行。本机除主实验 Qwen2.5-7B 外，只有完整缓存的
+> Qwen3-0.6B 可直接复用；没有第二个完整 7B 权重，因此本阶段定义为模型规模边界，
+> 不是同规模跨模型泛化。保持 1250 blocks、16-prefix、W=8/aging=10s 和同一官方
+> bench workload，先做一对 fresh-process C→T screening。若 output throughput
+> 至少 +1% 且 TTFT p99 无严重退化，再补 T→C 反向确认；否则记录小模型下
+> Scheduler CPU/heuristic 开销边界并停止，不为此下载新模型或继续调参。
 
 ### I.7 Phase 7: optional RTX 4090 KV-write kernel
 

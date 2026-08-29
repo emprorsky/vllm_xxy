@@ -78,12 +78,14 @@ def test_scheduler_iteration_details_serialization():
                 baseline_computed_tokens=24,
                 additional_recompute_tokens=25,
                 avoided_recompute_tokens=26,
+                preempted_computed_tokens=27,
+                resume_recompute_tokens=28,
             ),
             scheduling_feature_stats=SchedulingFeatureStats(
-                prefix_requests=27,
-                prefix_resolutions=28,
-                prefix_cache_hits=29,
-                invalidations=30,
+                prefix_requests=29,
+                prefix_resolutions=30,
+                prefix_cache_hits=31,
+                invalidations=32,
             ),
         )
     )
@@ -134,13 +136,15 @@ def test_scheduler_iteration_details_serialization():
         baseline_computed_tokens=24,
         additional_recompute_tokens=25,
         avoided_recompute_tokens=26,
+        preempted_computed_tokens=27,
+        resume_recompute_tokens=28,
     )
     assert decoded.scheduler_stats.scheduling_feature_stats == (
         SchedulingFeatureStats(
-            prefix_requests=27,
-            prefix_resolutions=28,
-            prefix_cache_hits=29,
-            invalidations=30,
+            prefix_requests=29,
+            prefix_resolutions=30,
+            prefix_cache_hits=31,
+            invalidations=32,
         )
     )
 

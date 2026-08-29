@@ -19,5 +19,26 @@
     "admitted_reordered": 82,
     "admitted_aged": 517,
     "admitted_cached_tokens": 437696
+  },
+  "cache_affinity_aging10_t2": {
+    "queries": 231366,
+    "hits": 152784,
+    "preemptions": 428,
+    "selection_calls": 12891,
+    "candidate_count": 100858,
+    "prefix_probes": 100858,
+    "candidates_with_hits": 67104,
+    "reordered_selections": 330,
+    "aged_selection_attempts": 12074,
+    "selected_cached_tokens": 9040016,
+    "admitted": 657,
+    "admitted_reordered": 81,
+    "admitted_aged": 545,
+    "admitted_cached_tokens": 462640
+  },
+  "default_c2": {
+    "queries": 231366,
+    "hits": 153776,
+    "preemptions": 421
   }
 }

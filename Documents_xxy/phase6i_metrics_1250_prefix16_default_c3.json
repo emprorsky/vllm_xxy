@@ -1,0 +1,63 @@
+{
+  "captured_at": "2026-08-29T14:07:46.266558+00:00",
+  "counters": {
+    "admission_admitted": 0.0,
+    "admission_admitted_aged": 0.0,
+    "admission_admitted_reordered": 0.0,
+    "admission_aged_selections": 0.0,
+    "admission_candidate_probes": 0.0,
+    "admission_reordered": 0.0,
+    "admission_selection_calls": 0.0,
+    "generation_tokens": 245760.0,
+    "preemptions": 423.0,
+    "prefix_cache_hits": 158896.0,
+    "prefix_cache_queries": 231366.0,
+    "prompt_tokens": 231366.0,
+    "prompt_tokens_cached": 158896.0
+  },
+  "derived": {
+    "prefix_cache_hit_rate": 0.6867733374826033,
+    "repeated_prefill_tokens_upper_bound": 0.0
+  },
+  "endpoint": "http://127.0.0.1:8000/metrics",
+  "engine": "0",
+  "histograms": {
+    "iteration_tokens": {
+      "count": 15320.0,
+      "mean": 20.77219321148825,
+      "sum": 318230.0
+    },
+    "request_decode_time_seconds": {
+      "count": 240.0,
+      "mean": 33.4774752284633,
+      "sum": 8034.594054831192
+    },
+    "request_inference_time_seconds": {
+      "count": 240.0,
+      "mean": 33.72392858176415,
+      "sum": 8093.742859623395
+    },
+    "request_prefill_kv_computed_tokens": {
+      "count": 240.0,
+      "mean": 301.9583333333333,
+      "sum": 72470.0
+    },
+    "request_prefill_time_seconds": {
+      "count": 240.0,
+      "mean": 0.24645335330084586,
+      "sum": 59.14880479220301
+    },
+    "request_queue_time_seconds": {
+      "count": 240.0,
+      "mean": 15.25024792572173,
+      "sum": 3660.059502173215
+    }
+  },
+  "label": "default_c3",
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "prompt_tokens_by_source": {
+    "external_kv_transfer": 0.0,
+    "local_cache_hit": 158896.0,
+    "local_compute": 72470.0
+  }
+}

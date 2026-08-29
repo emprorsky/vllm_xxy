@@ -1070,6 +1070,7 @@ def test_preempt_during_execution():
     assert len(scheduler.running) == 1
     assert scheduler.running[0] == requests[0]
     assert requests[1].status == RequestStatus.PREEMPTED
+    assert scheduler.kv_preemption_stats.preempted_computed_tokens == 80
 
     model_runner_output1 = ModelRunnerOutput(
         req_ids=[requests[1].request_id],
@@ -1085,6 +1086,33 @@ def test_preempt_during_execution():
     # sampled token id.
     assert len(requests[1].output_token_ids) == 1
     assert requests[1].output_token_ids[0] == 42
+
+
+def test_resume_recompute_stats_exclude_cache_hits_and_new_progress():
+    scheduler = create_scheduler()
+    request = create_requests(num_requests=1, num_tokens=100)[0]
+    scheduler.add_request(request)
+    request.num_computed_tokens = 64
+    scheduler._resume_recompute_frontiers[request.request_id] = 80
+
+    scheduler._record_resume_recompute_tokens({request.request_id: 32})
+
+    assert scheduler.kv_preemption_stats.resume_recompute_tokens == 16
+    assert request.request_id not in scheduler._resume_recompute_frontiers
+
+
+def test_repreemption_preserves_outstanding_recompute_frontier():
+    scheduler = create_scheduler()
+    request = create_requests(num_requests=1, num_tokens=100)[0]
+    scheduler.add_request(request)
+    scheduler.schedule()
+    request.num_computed_tokens = 64
+    scheduler._resume_recompute_frontiers[request.request_id] = 80
+
+    scheduler._preempt_request(request, timestamp=0.0)
+
+    assert scheduler._resume_recompute_frontiers[request.request_id] == 80
+    assert scheduler.kv_preemption_stats.preempted_computed_tokens == 64
 
 
 def test_prefix_cache_query_not_inflated_by_connector_defer():

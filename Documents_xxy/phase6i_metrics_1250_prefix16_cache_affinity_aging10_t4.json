@@ -1,0 +1,70 @@
+{
+  "captured_at": "2026-08-29T14:37:40.127048+00:00",
+  "counters": {
+    "admission_admitted": 690.0,
+    "admission_admitted_aged": 578.0,
+    "admission_admitted_reordered": 80.0,
+    "admission_aged_selections": 11734.0,
+    "admission_candidate_probes": 98307.0,
+    "admission_reordered": 321.0,
+    "admission_selection_calls": 12566.0,
+    "generation_tokens": 245760.0,
+    "preempted_computed_tokens": 541238.0,
+    "preemptions": 458.0,
+    "prefix_cache_hits": 155072.0,
+    "prefix_cache_queries": 231366.0,
+    "prompt_tokens": 231366.0,
+    "prompt_tokens_cached": 155072.0,
+    "resume_recompute_tokens": 186390.0
+  },
+  "derived": {
+    "model_compute_tokens_per_engine_output": 35.062685332046065,
+    "prefix_cache_hit_rate": 0.6702454120311541,
+    "resume_recompute_fraction_of_local_compute": 0.7095597752432581,
+    "resume_recompute_per_preempted_computed_token": 0.3443771501631445,
+    "total_local_compute_including_resume_recompute": 262684.0,
+    "total_model_compute_tokens": 508444.0
+  },
+  "endpoint": "http://127.0.0.1:8000/metrics",
+  "engine": "0",
+  "histograms": {
+    "iteration_tokens": {
+      "count": 14501.0,
+      "mean": 22.209089028342873,
+      "sum": 322054.0
+    },
+    "request_decode_time_seconds": {
+      "count": 240.0,
+      "mean": 31.949556045172116,
+      "sum": 7667.893450841308
+    },
+    "request_inference_time_seconds": {
+      "count": 240.0,
+      "mean": 32.19718008375494,
+      "sum": 7727.323220101185
+    },
+    "request_prefill_kv_computed_tokens": {
+      "count": 240.0,
+      "mean": 317.89166666666665,
+      "sum": 76294.0
+    },
+    "request_prefill_time_seconds": {
+      "count": 240.0,
+      "mean": 0.24762403858282292,
+      "sum": 59.4297692598775
+    },
+    "request_queue_time_seconds": {
+      "count": 240.0,
+      "mean": 15.683366647878817,
+      "sum": 3764.007995490916
+    }
+  },
+  "label": "cache_affinity_aging10_t4",
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "prompt_tokens_by_source": {
+    "external_kv_transfer": 0.0,
+    "local_cache_hit": 155072.0,
+    "local_compute": 76294.0
+  },
+  "schema_version": 2
+}

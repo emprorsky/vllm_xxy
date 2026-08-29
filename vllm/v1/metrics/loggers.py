@@ -703,6 +703,12 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             "avoided_recompute_tokens": (
                 "Positive computed-token cost avoided by changed selections."
             ),
+            "preempted_computed_tokens": (
+                "Sum of computed-token frontiers reset by preemption."
+            ),
+            "resume_recompute_tokens": (
+                "Scheduled tokens that repeat compute completed before preemption."
+            ),
         }
         self.counter_kv_preemption = {
             field: create_metric_per_engine(

@@ -218,6 +218,8 @@ class KVPreemptionStats:
     baseline_computed_tokens: int = 0
     additional_recompute_tokens: int = 0
     avoided_recompute_tokens: int = 0
+    preempted_computed_tokens: int = 0
+    resume_recompute_tokens: int = 0
 
 
 @dataclass

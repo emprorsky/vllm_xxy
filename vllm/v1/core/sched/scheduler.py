@@ -226,6 +226,7 @@ class Scheduler(SchedulerInterface):
         self.kv_retention_stats = KVRetentionStats()
         self.kv_admission_stats = KVAdmissionStats()
         self.kv_preemption_stats = KVPreemptionStats()
+        self._resume_recompute_frontiers: dict[str, int] = {}
 
         # Counter for requests waiting for streaming input. Used to calculate
         # number of unfinished requests
@@ -1525,6 +1526,7 @@ class Scheduler(SchedulerInterface):
         if self.defer_block_free and total_num_scheduled_tokens > 0:
             self.sched_step_seq += 1
 
+        self._record_resume_recompute_tokens(num_scheduled_tokens)
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output
@@ -1564,6 +1566,13 @@ class Scheduler(SchedulerInterface):
         assert request.status == RequestStatus.RUNNING, (
             "Only running requests can be preempted"
         )
+        if self.log_stats:
+            computed_tokens = request.num_computed_tokens
+            self.kv_preemption_stats.preempted_computed_tokens += computed_tokens
+            self._resume_recompute_frontiers[request.request_id] = max(
+                computed_tokens,
+                self._resume_recompute_frontiers.get(request.request_id, 0),
+            )
         self._free_request_blocks(request)
         self.encoder_cache_manager.free(request)
         self._inflight_prefills.discard(request)
@@ -1590,6 +1599,25 @@ class Scheduler(SchedulerInterface):
         # Put the request back to the waiting queue.
         self.waiting.prepend_request(request)
         self.reset_preempted_req_ids.add(request.request_id)
+
+    def _record_resume_recompute_tokens(
+        self, num_scheduled_tokens: dict[str, int]
+    ) -> None:
+        """Record scheduled work that repeats pre-preemption compute."""
+        if not self.log_stats or not self._resume_recompute_frontiers:
+            return
+
+        for request_id, num_tokens in num_scheduled_tokens.items():
+            frontier = self._resume_recompute_frontiers.get(request_id)
+            if frontier is None:
+                continue
+            start = self.requests[request_id].num_computed_tokens
+            end = start + num_tokens
+            self.kv_preemption_stats.resume_recompute_tokens += max(
+                0, min(end, frontier) - start
+            )
+            if end >= frontier:
+                del self._resume_recompute_frontiers[request_id]
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
         # Advance the number of computed tokens for the request AFTER
@@ -2903,6 +2931,7 @@ class Scheduler(SchedulerInterface):
 
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
+        self._resume_recompute_frontiers.pop(request_id, None)
         self.finished_req_ids.add(request_id)
         if self.finished_req_ids_dict is not None:
             self.finished_req_ids_dict[request.client_index].add(request_id)
