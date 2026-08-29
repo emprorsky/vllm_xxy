@@ -863,8 +863,34 @@ void reshape_and_cache_flash(
                   "k_scale and v_scale must be of shape [1] or [num_heads]");
   int kv_scale_stride = (k_scale.numel() > 1) ? 1 : 0;
 
+  const int num_elements = num_heads * head_size;
+  int block_threads = std::min(num_elements, 512);
+  if (kv_cache_dtype == "auto" && head_stride == head_size &&
+      kv_scale_stride == 0) {
+    constexpr int vector_bytes = 16;
+    constexpr int min_block_threads = 64;
+    const int vector_size = vector_bytes / key.element_size();
+    const bool vector_aligned =
+        num_elements % vector_size == 0 &&
+        reinterpret_cast<std::uintptr_t>(key.data_ptr()) % vector_bytes == 0 &&
+        reinterpret_cast<std::uintptr_t>(value.data_ptr()) % vector_bytes ==
+            0 &&
+        reinterpret_cast<std::uintptr_t>(key_cache.data_ptr()) % vector_bytes ==
+            0 &&
+        reinterpret_cast<std::uintptr_t>(value_cache.data_ptr()) %
+                vector_bytes ==
+            0 &&
+        key_stride % vector_size == 0 && value_stride % vector_size == 0 &&
+        block_stride % vector_size == 0 && page_stride % vector_size == 0;
+    const int vector_threads = num_elements / vector_size;
+    if (vector_aligned && vector_threads >= min_block_threads) {
+      block_threads = std::min(
+          cuda_utils::ceil_div(vector_threads, 32) * 32, 512);
+    }
+  }
+
   dim3 grid(num_tokens);
-  dim3 block(std::min(num_heads * head_size, 512));
+  dim3 block(block_threads);
 
   DISPATCH_BY_KV_CACHE_DTYPE(key.scalar_type(), kv_cache_dtype,
                              CALL_RESHAPE_AND_CACHE_FLASH);
