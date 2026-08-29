@@ -1018,6 +1018,16 @@ priority semantics, not a hard-coded magic numeric value.
 
 ### I.4 Phase 5b: reclaimable-KV estimate
 
+> 实施状态（2026-08-29）：只读信息层 correctness Gate 已完成。新增
+> `KVCacheManager.estimate_reclaimable_blocks(request)`，按请求在所有 group
+> block table 及 request-scoped partial-tail pins 中持有的引用重数，与物理
+> block 当前 `ref_cnt` 做相等比较；只计算无外部引用的唯一非 null 物理页。
+> estimator 不接入 `SchedulingFeatureContext`、preemption policy 或 Phase 5a
+> retention heuristic，并明确只表示 official free 后的 eventual pool return。
+> deferred-free 测试证明 fence 完成前这些页并不立即可用于 allocation retry。
+> 详见
+> [`PHASE5B_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5B_IMPLEMENTATION_REPORT_CODEX.md)。
+
 Add a read-only `estimate_reclaimable_blocks(request)` in `KVCacheManager` only
 after refcount semantics are proven by tests.
 

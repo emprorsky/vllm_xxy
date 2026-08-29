@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, overload
@@ -686,6 +687,39 @@ class KVCacheManager:
         if pins:
             blocks = pins + blocks
         return blocks
+
+    def estimate_reclaimable_blocks(self, request: Request) -> int:
+        """Estimate unique physical blocks released by an official free.
+
+        A block is reclaimable only when every current reference to it is owned
+        by this request. Request-scoped partial-tail pins are included because
+        they are released together with the request. Null blocks and blocks
+        with any external or operation-retention reference are excluded.
+
+        This read-only estimate describes eventual pool return. Scheduler-side
+        deferred freeing can prevent the pages from being immediately reusable
+        by an allocation retry.
+        """
+        owned_refs: Counter[int] = Counter()
+        physical_blocks: dict[int, KVCacheBlock] = {}
+
+        for group_blocks in self.coordinator.get_blocks(request.request_id):
+            for block in group_blocks:
+                if block.is_null:
+                    continue
+                owned_refs[block.block_id] += 1
+                physical_blocks.setdefault(block.block_id, block)
+
+        for block in self._partial_tail_pins.get(request.request_id, ()):
+            if block.is_null:
+                continue
+            owned_refs[block.block_id] += 1
+            physical_blocks.setdefault(block.block_id, block)
+
+        return sum(
+            block.ref_cnt == owned_refs[block_id]
+            for block_id, block in physical_blocks.items()
+        )
 
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.

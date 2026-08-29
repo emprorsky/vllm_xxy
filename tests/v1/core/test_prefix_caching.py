@@ -531,6 +531,140 @@ def test_prefill_hybrid_model():
     )
 
 
+def test_reclaimable_excludes_shared_prefix_and_is_read_only():
+    block_size = 4
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 12),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+
+    shared_tokens = list(range(2 * block_size))
+    req0 = make_request(
+        "reclaimable-0",
+        shared_tokens + [10] * block_size,
+        block_size,
+        sha256,
+    )
+    computed0, num_computed0, _ = manager.get_computed_blocks(req0)
+    assert num_computed0 == 0
+    assert manager.allocate_slots(req0, 3 * block_size, 0, computed0) is not None
+
+    req1 = make_request(
+        "reclaimable-1",
+        shared_tokens + [11] * block_size,
+        block_size,
+        sha256,
+    )
+    computed1, num_computed1, _ = manager.get_computed_blocks(req1)
+    assert num_computed1 == 2 * block_size
+    assert (
+        manager.allocate_slots(
+            req1,
+            block_size,
+            num_computed1,
+            computed1,
+        )
+        is not None
+    )
+
+    ref_counts_before = [block.ref_cnt for block in manager.block_pool.blocks]
+    free_order_before = [
+        block.block_id
+        for block in manager.block_pool.free_block_queue.get_all_free_blocks()
+    ]
+    assert manager.estimate_reclaimable_blocks(req0) == 1
+    assert manager.estimate_reclaimable_blocks(req1) == 1
+    assert [block.ref_cnt for block in manager.block_pool.blocks] == ref_counts_before
+    assert [
+        block.block_id
+        for block in manager.block_pool.free_block_queue.get_all_free_blocks()
+    ] == free_order_before
+
+    free_before = manager.block_pool.get_num_free_blocks()
+    manager.free(req0)
+    assert manager.block_pool.get_num_free_blocks() - free_before == 1
+    assert manager.estimate_reclaimable_blocks(req1) == 3
+    free_before = manager.block_pool.get_num_free_blocks()
+    manager.free(req1)
+    assert manager.block_pool.get_num_free_blocks() - free_before == 3
+
+
+def test_reclaimable_counts_request_multiplicity_once():
+    block_size = 4
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 5),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    req = make_request("multiplicity", [1] * block_size, block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(req)
+    assert manager.allocate_slots(req, block_size, 0, computed) is not None
+
+    req_blocks = manager.coordinator.single_type_managers[0].req_to_blocks[
+        req.request_id
+    ]
+    block = req_blocks[0]
+    manager.block_pool.touch((block,))
+    req_blocks.append(block)
+
+    assert block.ref_cnt == 2
+    assert manager.estimate_reclaimable_blocks(req) == 1
+    free_before = manager.block_pool.get_num_free_blocks()
+    manager.free(req)
+    assert manager.block_pool.get_num_free_blocks() - free_before == 1
+
+
+def test_reclaimable_includes_request_pin_but_excludes_operation_retention():
+    block_size = 4
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 6),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    req = make_request("retentions", [1] * block_size, block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(req)
+    assert manager.allocate_slots(req, block_size, 0, computed) is not None
+
+    request_block = manager.coordinator.get_blocks(req.request_id)[0][0]
+    pin = manager.block_pool.get_new_blocks(1)[0]
+    manager._partial_tail_pins[req.request_id] = [pin]
+    manager.block_pool.touch((request_block,))
+
+    assert manager.estimate_reclaimable_blocks(req) == 1
+    free_before = manager.block_pool.get_num_free_blocks()
+    manager.free(req)
+    assert manager.block_pool.get_num_free_blocks() - free_before == 1
+
+    manager.block_pool.free_blocks((request_block,))
+
+
+def test_reclaimable_hybrid_null_groups_match_actual_free_delta():
+    block_size = 4
+    manager = make_kv_cache_manager(
+        make_kv_cache_config_hybrid_model(block_size, 20, 2),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    req = make_request("hybrid", list(range(4 * block_size)), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(req)
+    assert manager.allocate_slots(req, 4 * block_size, 0, computed) is not None
+
+    manager.remove_skipped_blocks(req.request_id, 4 * block_size)
+    group_blocks = manager.coordinator.get_blocks(req.request_id)
+    assert any(block.is_null for blocks in group_blocks for block in blocks)
+
+    estimate = manager.estimate_reclaimable_blocks(req)
+    assert estimate == 8
+    free_before = manager.block_pool.get_num_free_blocks()
+    manager.free(req)
+    assert manager.block_pool.get_num_free_blocks() - free_before == estimate
+
+
 def test_prefill_hybrid_model_eagle():
     block_size = 16
     kv_cache_config = make_kv_cache_config_hybrid_model(block_size, 31, 3)

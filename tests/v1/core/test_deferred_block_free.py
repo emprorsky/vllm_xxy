@@ -145,6 +145,29 @@ def test_finish_defers_free_until_inflight_step_done():
     assert pool.get_num_free_blocks() == num_free_initially
 
 
+def test_reclaimable_estimate_is_eventual_when_free_is_deferred():
+    scheduler = _create_deferring_scheduler()
+    pool = scheduler.kv_cache_manager.block_pool
+
+    request, out0, out1 = _setup_request_with_inflight_step(scheduler)
+    num_free_running = pool.get_num_free_blocks()
+    eventual_reclaimable = scheduler.kv_cache_manager.estimate_reclaimable_blocks(
+        request
+    )
+    assert eventual_reclaimable > 0
+
+    scheduler.update_from_output(
+        out0, _make_model_runner_output(out0, token_id=STOP_TOKEN_ID)
+    )
+    assert request.is_finished()
+    assert len(scheduler.deferred_frees) == 1
+    assert pool.get_num_free_blocks() == num_free_running
+
+    scheduler.update_from_output(out1, _make_model_runner_output(out1))
+    assert not scheduler.deferred_frees
+    assert pool.get_num_free_blocks() - num_free_running == eventual_reclaimable
+
+
 def test_finish_frees_immediately_when_no_inflight_step():
     scheduler = _create_deferring_scheduler()
     pool = scheduler.kv_cache_manager.block_pool
