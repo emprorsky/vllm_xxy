@@ -30,5 +30,31 @@
     "admitted_reordered": 133,
     "admitted_aged": 619,
     "admitted_cached_tokens": 739472
+  },
+  "control_3": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 201664,
+    "preemptions": 568
+  },
+  "control_4": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 201664,
+    "preemptions": 626
+  },
+  "aging_10s_treatment_4": {
+    "prefix_cache_queries": 231375,
+    "prefix_cache_hits": 199808,
+    "preemptions": 577,
+    "selection_calls": 9314,
+    "candidates": 73329,
+    "candidate_probes": 73329,
+    "candidates_with_hits": 61452,
+    "reordered": 451,
+    "aged_selections": 8408,
+    "selected_cached_tokens": 7812448,
+    "admitted": 791,
+    "admitted_reordered": 159,
+    "admitted_aged": 577,
+    "admitted_cached_tokens": 684336
   }
 }

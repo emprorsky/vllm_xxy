@@ -8,8 +8,16 @@
 > Phase 6c 随后隔离验证 Phase 3 cache-affinity：两对官方反向顺序 A/B 吞吐均值
 > +4.286%、mean TPOT -9.190%，且 1,243 次成功重排证明机制激活；但 TTFT
 > mean/p99 退化 44.0%/59.0%，当前只验收为 opt-in throughput mode。Phase 6d
-> 单轮筛选表明 aging 10s 是待 paired confirmation 的折中候选（+3.648% throughput、
-> +29.060% TTFT p99），5s 则基本消除吞吐收益。Phase 2/5a
+> 的 aging=10s 两对反向 A/B 吞吐均值 +3.169%、mean TPOT -5.722%、TTFT p99
+> +22.678%，通过 balanced throughput preset Gate；5s 则基本消除吞吐收益。
+> Phase 6e 测得 W=8 admission 冷路径只占约 0.4% serving wall time。Phase 6f
+> 在 1000 blocks 的单对外推 screening 为 -0.600% throughput，跨 budget Gate
+> 未通过，因此 1250-block 收益不能概括为普遍提升。Phase 6g 的 1250-block
+> W=4 screening 为 -0.955% throughput / -8.874% TTFT p99：公平性收回但吞吐
+> 收益消失，到此停止 aging/window heuristic sweep。Phase 6h 随后固定 W=8/10s
+> 验证 16-prefix workload，首对 C→T 为 +5.632% throughput、-4.284% TTFT
+> p99、-7.398% mean TPOT，形成第二种 prefix diversity 下的初步正向证据，待反向
+> 顺序确认。Phase 2/5a
 > 的性能信号尚未完成稳定统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
@@ -21,7 +29,11 @@
 > [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md`](PHASE6B_CAUSAL_DIAGNOSTIC_REPORT_CODEX.md)、
 > [`PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md`](PHASE6C_ADMISSION_PERFORMANCE_REPORT_CODEX.md)、
-> [`PHASE6D_AGING_SWEEP_REPORT_CODEX.md`](PHASE6D_AGING_SWEEP_REPORT_CODEX.md)。
+> [`PHASE6D_AGING_SWEEP_REPORT_CODEX.md`](PHASE6D_AGING_SWEEP_REPORT_CODEX.md)、
+> [`PHASE6E_ADMISSION_CPU_REPORT_CODEX.md`](PHASE6E_ADMISSION_CPU_REPORT_CODEX.md)、
+> [`PHASE6F_KV_BUDGET_REPORT_CODEX.md`](PHASE6F_KV_BUDGET_REPORT_CODEX.md)、
+> [`PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md`](PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md)、
+> [`PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md`](PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1165,12 +1177,48 @@ Do not keep a perf patch without repeatable evidence.
 > successful reordered admission，证明策略真实改变行为。mean TPOT -9.190%，但
 > TTFT mean/p99 +44.0%/+59.0%，因此只定位为 opt-in throughput mode。
 
-### I.6d Phase 6d: aging trade-off screening
+### I.6d Phase 6d: aging trade-off confirmation
 
-> 实施状态（2026-08-29）：单轮筛选完成。aging 5s 相对 Phase 6c control mean 为
-> +0.275% throughput / +6.416% TTFT p99；aging 10s 为 +3.648% / +29.060%。
-> 10s 是唯一待 fresh-process paired confirmation 的 balanced 候选；在确认前不把
-> 单轮结果作为最终性能数据。
+> 实施状态（2026-08-29）：完成。aging 5s 相对 Phase 6c control mean 为
+> +0.275% throughput / +6.416% TTFT p99，因此停止复验。aging 10s 的两对
+> fresh-process 反向 A/B 吞吐分别 +2.436%/+3.913%，均值 +3.169%；mean TPOT
+> -5.722%，TTFT p99 +22.678%。保留 10s 为 balanced throughput preset 候选，
+> 默认 admission/aging 不改，到此停止 threshold sweep。
+
+### I.6e Phase 6e: admission Scheduler CPU measurement
+
+> 实施状态（2026-08-29）：完成。真实 Scheduler microbenchmark 中，window=8 的
+> default/hot/cold decision 分别为 0.172/30.433/78.466 us。按 aging=10s serving
+> 的 9,322 次 selection call 估算，累计约 0.731s，仅占约 180s wall time 的
+> 0.406%。probe 放大不是当前性能变化主因，因此不进入复杂跨代缓存；下一步验证
+> 1000-block KV budget 外推性。
+
+### I.6f Phase 6f: cross-KV-budget validation
+
+> 实施状态（2026-08-29）：1000-block C→T screening 完成。aging=10s、window=8
+> 相对 default admission 的 output throughput -0.600%、TTFT mean/p50/p99
+> +6.672%/+19.011%/+2.254%，跨 budget Gate 未通过。T1 虽有 13,699 次
+> selection call，但 862 次成功 admission 中仅 102 次重排，且 93.7% selection
+> 被 aging 恢复基础顺序。该点不做第二对复验；1250-block 的收益声明保持硬件、
+> 模型、workload 和 KV budget 限定。
+
+### I.6g Phase 6g: candidate-window screening
+
+> 实施状态（2026-08-29）：完成。1250 blocks、aging=10s 下将 window 从 8 缩至
+> 4，单轮 treatment-only screening 相对 Phase 6d control mean 为 -0.955%
+> output throughput、+4.179% TTFT mean、+43.459% TTFT p50、-8.874% TTFT
+> p99，mean TPOT 持平。W=4 收回了 tail TTFT，但未保留可见吞吐收益，不进入
+> paired confirmation。至此停止 aging/window sweep；W=8/aging=10s 保留为唯一
+> balanced opt-in preset 候选，默认 admission 不变。
+
+### I.6h Phase 6h: prefix-diversity generalization
+
+> 实施状态（2026-08-29）：首对 screening 完成。保持 1250 blocks、W=8、
+> aging=10s，将 prefix 数从 8 增至 16；fresh C→T 的 output throughput
+> +5.632%、duration -5.332%、TTFT mean/p50/p99 +2.663%/-1.544%/-4.284%、
+> mean TPOT -7.398%。T1 有 82 次 successful reordered admission，机制真实激活；
+> prefix hits 比 C1 少 2,256 tokens，说明收益不是 hit counter 增加导致。当前只作为
+> 第二种 workload shape 的正向泛化 screening，需 T→C 反向第二对确认。
 
 ### I.7 Phase 7: optional RTX 4090 KV-write kernel
 

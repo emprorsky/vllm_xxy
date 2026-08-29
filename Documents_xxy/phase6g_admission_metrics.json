@@ -1,0 +1,18 @@
+{
+  "cache_affinity_w4_aging10": {
+    "queries": 231375,
+    "hits": 201664,
+    "preemptions": 737,
+    "selection_calls": 9762,
+    "candidate_count": 38828,
+    "prefix_probes": 38828,
+    "candidates_with_hits": 36517,
+    "reordered_selections": 481,
+    "aged_selection_attempts": 8630,
+    "selected_cached_tokens": 9775360,
+    "admitted": 950,
+    "admitted_reordered": 206,
+    "admitted_aged": 645,
+    "admitted_cached_tokens": 849824
+  }
+}

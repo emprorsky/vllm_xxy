@@ -1,0 +1,23 @@
+{
+  "default_c1": {
+    "queries": 231366,
+    "hits": 156368,
+    "preemptions": 464
+  },
+  "cache_affinity_aging10_t1": {
+    "queries": 231366,
+    "hits": 154112,
+    "preemptions": 400,
+    "selection_calls": 12282,
+    "candidate_count": 97146,
+    "prefix_probes": 97146,
+    "candidates_with_hits": 59379,
+    "reordered_selections": 292,
+    "aged_selection_attempts": 11478,
+    "selected_cached_tokens": 8095008,
+    "admitted": 631,
+    "admitted_reordered": 82,
+    "admitted_aged": 517,
+    "admitted_cached_tokens": 437696
+  }
+}

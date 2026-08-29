@@ -99,9 +99,9 @@ batch 组成，使已运行请求的 mean TPOT 降低并缩短总完成时间；
 
 ## 5. 下一步
 
-> Phase 6d 已完成 5s/10s 单轮筛选：5s 基本收回 p99 TTFT 但吞吐收益降至
-> +0.275%；10s 为 +3.648% throughput / +29.060% TTFT p99，是下一轮唯一待
-> paired confirmation 的候选。详见
+> Phase 6d 已完成 5s/10s 筛选和 10s 两对反向确认：10s 两对吞吐分别
+> +2.436%/+3.913%，均值 +3.169%；mean TPOT -5.722%，TTFT p99 +22.678%。
+> 它通过 balanced throughput preset Gate，但仍不改变默认策略。详见
 > [`PHASE6D_AGING_SWEEP_REPORT_CODEX.md`](PHASE6D_AGING_SWEEP_REPORT_CODEX.md)。
 
 Phase 6d 只优化已证实的 throughput/fairness 边界，不叠加新的 KV heuristic：
