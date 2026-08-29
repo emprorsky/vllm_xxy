@@ -18,6 +18,7 @@ resetting computed tokens, re-queueing) remains in the Scheduler and queues.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 
 RequestOrderKey = tuple[Any, ...]
+ReclaimableResolver = Callable[["Request"], int]
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,13 @@ class AdmissionCandidate:
 class SchedulingDecisionPolicy(Protocol):
     """Read-only scheduling decisions shared by Scheduler and its queues."""
 
-    def select_preemption_victim(self, running: list[Request]) -> Request: ...
+    def select_preemption_victim(
+        self,
+        running: list[Request],
+        *,
+        allocation_shortfall_blocks: int = 0,
+        reclaimable_resolver: ReclaimableResolver | None = None,
+    ) -> Request: ...
 
     def waiting_order_key(self, request: Request) -> RequestOrderKey: ...
 
@@ -65,7 +73,14 @@ class DefaultSchedulingDecisionPolicy:
         self.policy = policy
         self.admission_policy = admission_policy
 
-    def select_preemption_victim(self, running: list[Request]) -> Request:
+    def select_preemption_victim(
+        self,
+        running: list[Request],
+        *,
+        allocation_shortfall_blocks: int = 0,
+        reclaimable_resolver: ReclaimableResolver | None = None,
+    ) -> Request:
+        del allocation_shortfall_blocks, reclaimable_resolver
         if self.policy == SchedulingPolicy.PRIORITY:
             # Lowest user priority (highest value); ties -> latest arrival.
             return max(running, key=lambda r: (r.priority, r.arrival_time))
@@ -131,14 +146,15 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
        stable regardless of running-list position.
     """
 
-    def select_preemption_victim(self, running: list[Request]) -> Request:
-        # Step 1: worst user-priority tier (hard constraint).
+    @staticmethod
+    def _worst_priority_candidates(running: list[Request]) -> list[Request]:
         worst_tier = max(r.priority for r in running)
-        candidates = [r for r in running if r.priority == worst_tier]
+        return [r for r in running if r.priority == worst_tier]
+
+    @staticmethod
+    def _select_by_recompute_cost(candidates: list[Request]) -> Request:
         if len(candidates) == 1:
             return candidates[0]
-        # Step 2-4: anti-thrashing, then min recompute cost, then latest
-        # arrival.
         return min(
             candidates,
             key=lambda r: (
@@ -148,6 +164,17 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
                 r.request_id,
             ),
         )
+
+    def select_preemption_victim(
+        self,
+        running: list[Request],
+        *,
+        allocation_shortfall_blocks: int = 0,
+        reclaimable_resolver: ReclaimableResolver | None = None,
+    ) -> Request:
+        del allocation_shortfall_blocks, reclaimable_resolver
+        candidates = self._worst_priority_candidates(running)
+        return self._select_by_recompute_cost(candidates)
 
     def waiting_order_key(self, request: Request) -> RequestOrderKey:
         """Prioritize resumed requests without crossing user priorities."""
@@ -160,12 +187,47 @@ class RecomputeAwareSchedulingDecisionPolicy(DefaultSchedulingDecisionPolicy):
         )
 
 
+class ReclaimableAwareSchedulingDecisionPolicy(
+    RecomputeAwareSchedulingDecisionPolicy
+):
+    """Prefer victims that make the most immediate progress on KV shortfall."""
+
+    def select_preemption_victim(
+        self,
+        running: list[Request],
+        *,
+        allocation_shortfall_blocks: int = 0,
+        reclaimable_resolver: ReclaimableResolver | None = None,
+    ) -> Request:
+        candidates = self._worst_priority_candidates(running)
+        if allocation_shortfall_blocks <= 0 or reclaimable_resolver is None:
+            return self._select_by_recompute_cost(candidates)
+
+        reclaimable = {
+            id(request): max(reclaimable_resolver(request), 0)
+            for request in candidates
+        }
+        max_progress = max(
+            min(reclaimable[id(request)], allocation_shortfall_blocks)
+            for request in candidates
+        )
+        candidates = [
+            request
+            for request in candidates
+            if min(reclaimable[id(request)], allocation_shortfall_blocks)
+            == max_progress
+        ]
+        return self._select_by_recompute_cost(candidates)
+
+
 def create_decision_policy(
     policy: SchedulingPolicy,
     preemption_policy: str,
     admission_policy: str = "default",
 ) -> SchedulingDecisionPolicy:
-    """Factory: ``recompute_aware`` opts into the KV-aware policy."""
+    """Create the configured read-only scheduling decision policy."""
+    if preemption_policy == "reclaimable_aware":
+        return ReclaimableAwareSchedulingDecisionPolicy(policy, admission_policy)
     if preemption_policy == "recompute_aware":
         return RecomputeAwareSchedulingDecisionPolicy(policy, admission_policy)
     return DefaultSchedulingDecisionPolicy(policy, admission_policy)

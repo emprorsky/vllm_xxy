@@ -412,6 +412,7 @@ class KVCacheManager:
         has_scheduled_reqs: bool = True,
         retention_resolver: Callable[[], dict[int, BlockRetentionTier]] | None = None,
         retention_observer: Callable[[int, int], None] | None = None,
+        allocation_failure_observer: Callable[[int], None] | None = None,
     ) -> KVCacheBlocks | None:
         """Add slots for a request with new tokens to append.
 
@@ -450,6 +451,8 @@ class KVCacheManager:
                 at most once per allocation.
             retention_observer: Optional callback receiving the number of LRU
                 evictions avoided and retained blocks consumed as fallback.
+            allocation_failure_observer: Optional callback receiving the exact
+                physical-block shortfall when this allocation returns None.
 
         Blocks layout:
         ```
@@ -548,7 +551,10 @@ class KVCacheManager:
                 apply_admission_cap=True,
             )
             required_blocks = num_blocks_to_allocate + watermark_blocks
-            if required_blocks > self.block_pool.get_num_free_blocks():
+            free_blocks = self.block_pool.get_num_free_blocks()
+            if required_blocks > free_blocks:
+                if allocation_failure_observer is not None:
+                    allocation_failure_observer(required_blocks - free_blocks)
                 return None
 
         num_tokens_main_model = total_computed_tokens + num_new_tokens
@@ -588,6 +594,8 @@ class KVCacheManager:
         required_blocks = num_blocks_to_allocate + watermark_blocks
         if required_blocks > available_blocks:
             # Cannot allocate new blocks
+            if allocation_failure_observer is not None:
+                allocation_failure_observer(required_blocks - available_blocks)
             return None
 
         retention_hint = (

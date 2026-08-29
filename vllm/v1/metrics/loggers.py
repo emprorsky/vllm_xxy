@@ -665,6 +665,36 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             for field, documentation in admission_counter_docs.items()
         }
 
+        preemption_counter_docs = {
+            "shortfall_events": "Number of reclaimability-aware KV shortfalls.",
+            "shortfall_blocks": "Total physical-block shortfall across failures.",
+            "candidate_estimates": "Number of victim reclaimability estimates.",
+            "deferred_candidates": (
+                "Number of candidates unable to return blocks before the retry."
+            ),
+            "reclaimable_blocks": "Total immediate blocks across estimated candidates.",
+            "selected_reclaimable_blocks": (
+                "Total immediate blocks predicted for selected victims."
+            ),
+            "sufficient_selections": (
+                "Number of selected victims predicted to satisfy the shortfall."
+            ),
+            "zero_progress_selections": (
+                "Number of selections with zero immediate reclaimable blocks."
+            ),
+        }
+        self.counter_kv_preemption = {
+            field: create_metric_per_engine(
+                self._counter_cls(
+                    name=f"vllm:kv_preemption_{field}",
+                    documentation=documentation,
+                    labelnames=labelnames,
+                ),
+                per_engine_labelvalues,
+            )
+            for field, documentation in preemption_counter_docs.items()
+        }
+
         feature_counter_docs = {
             "prefix_requests": "Number of lazy local prefix feature reads.",
             "prefix_resolutions": (
@@ -1220,6 +1250,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             admission_stats = scheduler_stats.kv_admission_stats
             for field, counters in self.counter_kv_admission.items():
                 counters[engine_idx].inc(getattr(admission_stats, field))
+            preemption_stats = scheduler_stats.kv_preemption_stats
+            for field, counters in self.counter_kv_preemption.items():
+                counters[engine_idx].inc(getattr(preemption_stats, field))
             feature_stats = scheduler_stats.scheduling_feature_stats
             for field, counters in self.counter_scheduling_features.items():
                 counters[engine_idx].inc(getattr(feature_stats, field))

@@ -128,7 +128,9 @@ def mock_output(out, tok=100):
     )
 
 
-@pytest.mark.parametrize("preemption_policy", ["default", "recompute_aware"])
+@pytest.mark.parametrize(
+    "preemption_policy", ["default", "recompute_aware", "reclaimable_aware"]
+)
 def test_priority_scheduler_preempt_skipped_request(tmp_path, preemption_policy):
     scheduler = build_scheduler(tmp_path, preemption_policy)
 

@@ -5,6 +5,7 @@ from vllm.v1.engine import EngineCoreOutputs, FinishReason
 from vllm.v1.metrics.stats import (
     IterationStats,
     KVAdmissionStats,
+    KVPreemptionStats,
     KVRetentionStats,
     PrefillStats,
     PromptTokenStats,
@@ -61,11 +62,21 @@ def test_scheduler_iteration_details_serialization():
                 admitted_aged=10,
                 admitted_cached_tokens=11,
             ),
+            kv_preemption_stats=KVPreemptionStats(
+                shortfall_events=12,
+                shortfall_blocks=13,
+                candidate_estimates=14,
+                deferred_candidates=15,
+                reclaimable_blocks=16,
+                selected_reclaimable_blocks=17,
+                sufficient_selections=18,
+                zero_progress_selections=19,
+            ),
             scheduling_feature_stats=SchedulingFeatureStats(
-                prefix_requests=12,
-                prefix_resolutions=13,
-                prefix_cache_hits=14,
-                invalidations=15,
+                prefix_requests=20,
+                prefix_resolutions=21,
+                prefix_cache_hits=22,
+                invalidations=23,
             ),
         )
     )
@@ -100,12 +111,22 @@ def test_scheduler_iteration_details_serialization():
         admitted_aged=10,
         admitted_cached_tokens=11,
     )
+    assert decoded.scheduler_stats.kv_preemption_stats == KVPreemptionStats(
+        shortfall_events=12,
+        shortfall_blocks=13,
+        candidate_estimates=14,
+        deferred_candidates=15,
+        reclaimable_blocks=16,
+        selected_reclaimable_blocks=17,
+        sufficient_selections=18,
+        zero_progress_selections=19,
+    )
     assert decoded.scheduler_stats.scheduling_feature_stats == (
         SchedulingFeatureStats(
-            prefix_requests=12,
-            prefix_resolutions=13,
-            prefix_cache_hits=14,
-            invalidations=15,
+            prefix_requests=20,
+            prefix_resolutions=21,
+            prefix_cache_hits=22,
+            invalidations=23,
         )
     )
 

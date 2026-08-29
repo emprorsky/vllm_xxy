@@ -1,12 +1,16 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1、Phase 2、Phase 3、Phase 4、Phase 5a correctness Gate 已完成；
-> Phase 2 性能 Gate 未通过，Phase 3/4/5a 的性能信号尚未完成稳定统计验收。详见
+> 状态：Phase 1 至 Phase 5c correctness Gate 已完成；Phase 5c 在固定 RTX 4090
+> 高 KV 压力场景的两对反向顺序 A/B 中，吞吐均值提升 2.797%、wall time
+> 降低 2.722%、抢占次数均值降低 8.258%，通过当前场景的性能 Gate；Phase 2
+> 性能 Gate 未通过，Phase 3/4/5a 的性能信号尚未完成稳定统计验收。详见
 > [`PHASE1_IMPLEMENTATION_REPORT.md`](PHASE1_IMPLEMENTATION_REPORT.md)、
 > [`PHASE2_REVIEW_CODEX.md`](PHASE2_REVIEW_CODEX.md) 和
 > [`PHASE3_IMPLEMENTATION_REPORT_CODEX.md`](PHASE3_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)、
-> [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)。
+> [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE5B_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5B_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1068,7 +1072,41 @@ deferred-free fallback.
 | `tests/v1/core/test_deferred_block_free.py` | `test_reclaimable_policy_falls_back_when_free_is_deferred` | in-flight write fence prevents immediate return | select victim/estimate | advanced feasibility is disabled or reports zero immediate pages; recompute fallback used |
 | `tests/v1/core/test_preemption_policy.py` | `test_advanced_victim_uses_feasibility_before_recompute` | same priority; only one candidate reduces deficit, another has lower recompute | select victim | feasible candidate chosen, then recompute tie-break within feasible set |
 
-### I.5 Phase 6: Scheduler CPU performance
+### I.5 Phase 5c: allocation-shortfall-aware victim feasibility
+
+> 实施状态（2026-08-29）：correctness Gate 和当前固定压力场景 performance
+> Gate 已完成。新增独立 `reclaimable_aware` 实验策略，只在真实 allocation
+> failure 后读取精确 physical-block shortfall，并在最差 user-priority tier 内
+> 优先选择能立即减少 shortfall 的 victim；无法提供立即容量时严格回退到
+> `recompute_aware`。deferred-free 候选在 fence 完成前记为 0，不把 Phase 5b
+> eventual estimate 误当成立即容量。两对反向顺序 A/B 的吞吐变化分别为
+> +2.886% 和 +2.709%，均值 +2.797%；抢占均值 -8.258%，prefix hits 均值
+> 持平。TTFT mean/p99 基本持平，因此结论限定在吞吐和抢占效率，不宣称全面
+> 延迟改善。详见
+> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)。
+
+Implemented victim hierarchy:
+
+```text
+1. worst user-priority tier (hard constraint)
+2. maximum min(immediately_reclaimable, allocation_shortfall)
+3. binary resume protection
+4. minimum recompute cost
+5. stable arrival/request-id tie-break
+```
+
+The estimator is invoked only for `reclaimable_aware` after an actual failed
+allocation. Default and `recompute_aware` paths do not collect the shortfall or
+scan candidate block tables. Prometheus counters expose activation, candidate
+estimates, deferred candidates, selected capacity and zero-progress fallback.
+
+The current workload produced only one-block deficits. The measured gain is
+therefore evidence for filtering zero-immediate-progress victims under this
+pressure shape, not proof that larger-deficit ranking is universally optimal.
+Before broadening the claim, repeat across another model/pressure shape and add
+Scheduler CPU decision-cost measurements.
+
+### I.6 Phase 6: Scheduler CPU performance
 
 Measure before optimizing. Use request counts 1/8/16/64/256 and report:
 
@@ -1088,7 +1126,7 @@ Primary goals:
 
 Do not keep a perf patch without repeatable evidence.
 
-### I.6 Phase 7: optional RTX 4090 KV-write kernel
+### I.7 Phase 7: optional RTX 4090 KV-write kernel
 
 Reconnaissance at this commit found:
 

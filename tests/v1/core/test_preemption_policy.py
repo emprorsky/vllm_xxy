@@ -139,6 +139,73 @@ class TestRecomputeAwarePolicy:
         assert policy.select_preemption_victim([second, first]) is first
 
 
+class TestReclaimableAwarePolicy:
+    @staticmethod
+    def select(reqs, shortfall, blocks):
+        policy = create_decision_policy(SchedulingPolicy.FCFS, "reclaimable_aware")
+        return policy.select_preemption_victim(
+            reqs,
+            allocation_shortfall_blocks=shortfall,
+            reclaimable_resolver=lambda request: blocks[request.request_id],
+        )
+
+    def test_sufficient_reclaimability_beats_lower_recompute_cost(self):
+        expensive = make_request("expensive", num_computed_tokens=1000)
+        cheap = make_request("cheap", num_computed_tokens=10)
+
+        assert self.select([expensive, cheap], 3, {"expensive": 3, "cheap": 0}) is (
+            expensive
+        )
+
+    def test_reclaimability_is_capped_at_shortfall(self):
+        expensive = make_request("expensive", num_computed_tokens=1000)
+        cheap = make_request("cheap", num_computed_tokens=10)
+
+        assert self.select([expensive, cheap], 3, {"expensive": 8, "cheap": 3}) is (
+            cheap
+        )
+
+    def test_larger_partial_reduction_wins(self):
+        larger = make_request("larger", num_computed_tokens=1000)
+        cheaper = make_request("cheaper", num_computed_tokens=10)
+
+        assert self.select([larger, cheaper], 3, {"larger": 2, "cheaper": 1}) is (
+            larger
+        )
+
+    def test_zero_progress_falls_back_to_recompute_order(self):
+        expensive = make_request("expensive", num_computed_tokens=1000)
+        cheap = make_request("cheap", num_computed_tokens=10)
+
+        assert self.select([expensive, cheap], 3, {"expensive": 0, "cheap": 0}) is (
+            cheap
+        )
+
+    def test_resume_protection_breaks_equal_progress_tie(self):
+        resumed = make_request(
+            "resumed", num_computed_tokens=10, num_preemptions=1
+        )
+        fresh = make_request("fresh", num_computed_tokens=1000)
+
+        assert self.select([resumed, fresh], 2, {"resumed": 2, "fresh": 2}) is fresh
+
+    def test_priority_is_hard_constraint_and_bounds_resolution(self):
+        important = make_request("important", priority=0, num_computed_tokens=10)
+        low_priority = make_request("low", priority=5, num_computed_tokens=1000)
+        resolved = []
+        policy = create_decision_policy(SchedulingPolicy.PRIORITY, "reclaimable_aware")
+
+        victim = policy.select_preemption_victim(
+            [important, low_priority],
+            allocation_shortfall_blocks=2,
+            reclaimable_resolver=lambda request: resolved.append(request.request_id)
+            or 0,
+        )
+
+        assert victim is low_priority
+        assert resolved == ["low"]
+
+
 class TestWaitingOrder:
     def test_fcfs_prepend_still_resumes_first(self):
         policy = create_decision_policy(SchedulingPolicy.FCFS, "recompute_aware")

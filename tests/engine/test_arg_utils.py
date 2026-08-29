@@ -519,6 +519,10 @@ def test_prefix_cache_default():
     engine_args = EngineArgs.from_cli_args(args=args)
     assert engine_args.prefix_cache_eviction_policy == "priority_aware"
 
+    args = parser.parse_args(["--preemption-policy", "reclaimable_aware"])
+    engine_args = EngineArgs.from_cli_args(args=args)
+    assert engine_args.preemption_policy == "reclaimable_aware"
+
 
 def test_prefix_cache_retention_interval_from_deprecated_env(
     monkeypatch, caplog, disable_log_dedup

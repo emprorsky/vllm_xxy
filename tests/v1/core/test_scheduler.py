@@ -2875,7 +2875,11 @@ def test_priority_scheduling_arrival_time_tiebreaker():
 
 @pytest.mark.parametrize(
     ("preemption_policy", "expected_request_id"),
-    [("default", "fresh"), ("recompute_aware", "resumed")],
+    [
+        ("default", "fresh"),
+        ("recompute_aware", "resumed"),
+        ("reclaimable_aware", "resumed"),
+    ],
 )
 def test_priority_resume_order(tmp_path, preemption_policy, expected_request_id):
     scheduler = create_scheduler_with_priority(
@@ -2979,7 +2983,10 @@ def test_priority_scheduling_mixed_priority_and_arrival():
     assert scheduled_req_ids == ["3", "2", "1", "0"]
 
 
-def test_priority_scheduling_preemption():
+@pytest.mark.parametrize(
+    "preemption_policy", ["default", "recompute_aware", "reclaimable_aware"]
+)
+def test_priority_scheduling_preemption(preemption_policy):
     """Test that under KV block pressure the scheduler preempts the
     lowest-priority *running* request, not the highest-priority one.
 
@@ -3010,7 +3017,12 @@ def test_priority_scheduling_preemption():
         max_num_batched_tokens=200,
         num_blocks=num_blocks,
         block_size=block_size,
+        preemption_policy=preemption_policy,
     )
+    if preemption_policy != "reclaimable_aware":
+        scheduler.kv_cache_manager.estimate_reclaimable_blocks = Mock(
+            side_effect=AssertionError("control policies must not estimate refcounts")
+        )
 
     # --- Phase 1: low-priority request starts running ---
     lo1 = create_requests_with_priority(
@@ -3076,6 +3088,13 @@ def test_priority_scheduling_preemption():
     assert any(req.request_id == "hi1" for req in scheduler.running), (
         "High-priority 'hi1' should still be running"
     )
+    if preemption_policy == "reclaimable_aware":
+        stats = scheduler.kv_preemption_stats
+        assert stats.shortfall_events == 1
+        assert stats.shortfall_blocks == 1
+        assert stats.candidate_estimates == 1
+        assert stats.selected_reclaimable_blocks == 3
+        assert stats.sufficient_selections == 1
 
 
 def test_priority_scheduling_no_preemption_when_space_available():
@@ -6838,3 +6857,74 @@ def test_priority_retention_resume_promotes_shared_demand_under_fcfs():
     assert scheduler.kv_retention_stats.normal_blocks == 0
     assert scheduler.kv_retention_stats.resumed_blocks == 3
     assert scheduler.kv_retention_stats.high_priority_blocks == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 5c: reclaimability-aware preemption feasibility.
+# ---------------------------------------------------------------------------
+
+
+def test_reclaimable_preemption_uses_immediate_progress_and_records_stats():
+    scheduler = create_scheduler(preemption_policy="reclaimable_aware")
+    expensive, cheap = create_requests(
+        num_requests=2,
+        num_tokens=16,
+        req_ids=["expensive", "cheap"],
+    )
+    expensive.num_computed_tokens = 1000
+    cheap.num_computed_tokens = 10
+    scheduler.running = [expensive, cheap]
+    scheduler.kv_cache_manager.estimate_reclaimable_blocks = Mock(
+        side_effect=lambda request: 2 if request is expensive else 0
+    )
+
+    victim = scheduler._select_reclaimable_preemption_victim(1)
+
+    assert victim is expensive
+    stats = scheduler.kv_preemption_stats
+    assert stats.shortfall_events == 1
+    assert stats.shortfall_blocks == 1
+    assert stats.candidate_estimates == 2
+    assert stats.reclaimable_blocks == 2
+    assert stats.selected_reclaimable_blocks == 2
+    assert stats.sufficient_selections == 1
+    assert stats.zero_progress_selections == 0
+
+    flushed = scheduler.make_stats()
+    assert flushed is not None
+    assert flushed.kv_preemption_stats == stats
+    assert scheduler.kv_preemption_stats.shortfall_events == 0
+
+
+def test_reclaimable_preemption_falls_back_when_free_would_be_deferred():
+    scheduler = create_scheduler(preemption_policy="reclaimable_aware")
+    expensive, cheap = create_requests(
+        num_requests=2,
+        num_tokens=16,
+        req_ids=["expensive", "cheap"],
+    )
+    expensive.num_computed_tokens = 1000
+    cheap.num_computed_tokens = 10
+    expensive.last_sched_seq = cheap.last_sched_seq = 1
+    scheduler.running = [expensive, cheap]
+    scheduler.defer_block_free = True
+    scheduler.processed_step_seq = 0
+    scheduler.kv_cache_manager.estimate_reclaimable_blocks = Mock(
+        side_effect=AssertionError("deferred candidates must not resolve refcounts")
+    )
+
+    victim = scheduler._select_reclaimable_preemption_victim(1)
+
+    assert victim is cheap
+    stats = scheduler.kv_preemption_stats
+    assert stats.candidate_estimates == 2
+    assert stats.deferred_candidates == 2
+    assert stats.reclaimable_blocks == 0
+    assert stats.sufficient_selections == 0
+    assert stats.zero_progress_selections == 1
+
+
+def test_reclaimable_preemption_does_not_create_feature_context():
+    scheduler = create_scheduler(preemption_policy="reclaimable_aware")
+
+    assert scheduler.scheduling_feature_context is None

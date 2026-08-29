@@ -3818,7 +3818,46 @@ def test_can_fit_full_sequence_full_attention_still_gates_oversized():
     prompt_len = 16 * block_size
     req = make_request("oversized", list(range(prompt_len)), block_size, sha256)
 
-    assert manager.allocate_slots(req, block_size, full_sequence_must_fit=True) is None
+    shortfalls = []
+    assert (
+        manager.allocate_slots(
+            req,
+            block_size,
+            full_sequence_must_fit=True,
+            allocation_failure_observer=shortfalls.append,
+        )
+        is None
+    )
+    assert len(shortfalls) == 1
+    assert shortfalls[0] > 0
+
+
+def test_allocation_failure_observer_reports_exact_retry_shortfall():
+    block_size = 4
+    manager = make_kv_cache_manager(
+        make_kv_cache_config(block_size, 5),
+        max_model_len=128,
+        enable_caching=True,
+        hash_block_size=block_size,
+    )
+    holder = make_request("holder", [1] * (3 * block_size), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(holder)
+    assert manager.allocate_slots(holder, 3 * block_size, 0, computed) is not None
+
+    request = make_request("request", [2] * (2 * block_size), block_size, sha256)
+    computed, _, _ = manager.get_computed_blocks(request)
+    shortfalls = []
+    assert (
+        manager.allocate_slots(
+            request,
+            2 * block_size,
+            0,
+            computed,
+            allocation_failure_observer=shortfalls.append,
+        )
+        is None
+    )
+    assert shortfalls == [1]
 
 
 def test_cache_hit_local_and_external():

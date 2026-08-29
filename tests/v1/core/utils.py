@@ -78,6 +78,7 @@ def create_scheduler(
     kv_aware_candidate_window: int = 8,
     admission_policy: str = "default",
     kv_aware_aging_threshold_s: float = 30.0,
+    preemption_policy: str = "default",
 ) -> Scheduler | AsyncScheduler:
     """Create scheduler under test.
 
@@ -118,6 +119,7 @@ def create_scheduler(
         kv_aware_candidate_window=kv_aware_candidate_window,
         admission_policy=admission_policy,
         kv_aware_aging_threshold_s=kv_aware_aging_threshold_s,
+        preemption_policy=preemption_policy,
     )
     # Cache config, optionally force APC
     cache_config = CacheConfig(

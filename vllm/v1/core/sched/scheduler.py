@@ -63,6 +63,7 @@ from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import (
     KVAdmissionStats,
+    KVPreemptionStats,
     KVRetentionStats,
     PrefixCacheStats,
     RequestSpecDecodeMetrics,
@@ -224,6 +225,7 @@ class Scheduler(SchedulerInterface):
         self.reset_preempted_req_ids: set[str] = set()
         self.kv_retention_stats = KVRetentionStats()
         self.kv_admission_stats = KVAdmissionStats()
+        self.kv_preemption_stats = KVPreemptionStats()
 
         # Counter for requests waiting for streaming input. Used to calculate
         # number of unfinished requests
@@ -524,6 +526,49 @@ class Scheduler(SchedulerInterface):
         if self.scheduling_feature_context is not None:
             self.scheduling_feature_context.invalidate_kv_features()
 
+    def _request_free_would_be_deferred(self, request: Request) -> bool:
+        return (
+            self.defer_block_free and request.last_sched_seq > self.processed_step_seq
+        )
+
+    def _estimate_immediately_reclaimable_blocks(self, request: Request) -> int:
+        if self._request_free_would_be_deferred(request):
+            return 0
+        return self.kv_cache_manager.estimate_reclaimable_blocks(request)
+
+    def _select_reclaimable_preemption_victim(
+        self, allocation_shortfall_blocks: int
+    ) -> Request:
+        stats = self.kv_preemption_stats
+        stats.shortfall_events += 1
+        stats.shortfall_blocks += allocation_shortfall_blocks
+        reclaimable_by_request: dict[int, int] = {}
+
+        def resolve_reclaimable(candidate: Request) -> int:
+            key = id(candidate)
+            if key not in reclaimable_by_request:
+                if self._request_free_would_be_deferred(candidate):
+                    stats.deferred_candidates += 1
+                value = self._estimate_immediately_reclaimable_blocks(candidate)
+                reclaimable_by_request[key] = value
+                stats.candidate_estimates += 1
+                stats.reclaimable_blocks += value
+            return reclaimable_by_request[key]
+
+        victim = self.decision_policy.select_preemption_victim(
+            self.running,
+            allocation_shortfall_blocks=allocation_shortfall_blocks,
+            reclaimable_resolver=resolve_reclaimable,
+        )
+        selected_reclaimable = resolve_reclaimable(victim)
+        stats.selected_reclaimable_blocks += selected_reclaimable
+        stats.sufficient_selections += (
+            allocation_shortfall_blocks > 0
+            and selected_reclaimable >= allocation_shortfall_blocks
+        )
+        stats.zero_progress_selections += selected_reclaimable == 0
+        return victim
+
     def _reserve_prefill_lookahead(
         self,
         request: Request,
@@ -699,15 +744,33 @@ class Scheduler(SchedulerInterface):
 
             # Schedule newly needed KV blocks for the request.
             with record_function_or_nullcontext("schedule: allocate_slots"):
+                allocation_shortfall_blocks = 0
+                allocation_shortfalls = (
+                    []
+                    if self.scheduler_config.preemption_policy == "reclaimable_aware"
+                    else None
+                )
+                allocation_failure_observer = (
+                    allocation_shortfalls.append
+                    if allocation_shortfalls is not None
+                    else None
+                )
+
                 while True:
+                    allocation_shortfall_blocks = 0
+                    if allocation_shortfalls is not None:
+                        allocation_shortfalls.clear()
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
                         num_new_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                         retention_resolver=self._make_waiting_demand_retention_resolver(),
                         retention_observer=self._record_retention_selection,
+                        allocation_failure_observer=allocation_failure_observer,
                     )
                     self._invalidate_scheduling_features()
+                    if allocation_shortfalls:
+                        allocation_shortfall_blocks = allocation_shortfalls[-1]
 
                     if new_blocks is not None:
                         # The request can be scheduled.
@@ -723,9 +786,21 @@ class Scheduler(SchedulerInterface):
                         # running list, so remove by index (the default FCFS
                         # policy still selects the newest request, i.e. the
                         # last element, matching the base-commit behavior).
-                        preempted_req = self.decision_policy.select_preemption_victim(
-                            self.running
-                        )
+                        if (
+                            self.scheduler_config.preemption_policy
+                            == "reclaimable_aware"
+                        ):
+                            preempted_req = (
+                                self._select_reclaimable_preemption_victim(
+                                    allocation_shortfall_blocks
+                                )
+                            )
+                        else:
+                            preempted_req = (
+                                self.decision_policy.select_preemption_victim(
+                                    self.running
+                                )
+                            )
                         # Record the index of the preemption victim to
                         # maintain accurate loop state.
                         victim_index = self.running.index(preempted_req)
@@ -3025,6 +3100,8 @@ class Scheduler(SchedulerInterface):
         self.kv_retention_stats = KVRetentionStats()
         kv_admission_stats = self.kv_admission_stats
         self.kv_admission_stats = KVAdmissionStats()
+        kv_preemption_stats = self.kv_preemption_stats
+        self.kv_preemption_stats = KVPreemptionStats()
         scheduling_feature_stats = (
             self.scheduling_feature_context.take_stats()
             if self.scheduling_feature_context is not None
@@ -3040,6 +3117,7 @@ class Scheduler(SchedulerInterface):
             kv_cache_eviction_events=eviction_events,
             kv_retention_stats=kv_retention_stats,
             kv_admission_stats=kv_admission_stats,
+            kv_preemption_stats=kv_preemption_stats,
             scheduling_feature_stats=scheduling_feature_stats,
             spec_decoding_stats=spec_stats,
             kv_connector_stats=connector_stats_payload,

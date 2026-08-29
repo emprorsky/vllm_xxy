@@ -200,6 +200,20 @@ class KVAdmissionStats:
 
 
 @dataclass
+class KVPreemptionStats:
+    """Reclaimability-aware preemption activity since the previous flush."""
+
+    shortfall_events: int = 0
+    shortfall_blocks: int = 0
+    candidate_estimates: int = 0
+    deferred_candidates: int = 0
+    reclaimable_blocks: int = 0
+    selected_reclaimable_blocks: int = 0
+    sufficient_selections: int = 0
+    zero_progress_selections: int = 0
+
+
+@dataclass
 class SchedulingFeatureStats:
     """Lazy scheduling-feature activity since the previous stats flush."""
 
@@ -246,6 +260,7 @@ class SchedulerStats:
     kv_cache_eviction_events: list[KVCacheEvictionEvent] = field(default_factory=list)
     kv_retention_stats: KVRetentionStats = field(default_factory=KVRetentionStats)
     kv_admission_stats: KVAdmissionStats = field(default_factory=KVAdmissionStats)
+    kv_preemption_stats: KVPreemptionStats = field(default_factory=KVPreemptionStats)
     scheduling_feature_stats: SchedulingFeatureStats = field(
         default_factory=SchedulingFeatureStats
     )

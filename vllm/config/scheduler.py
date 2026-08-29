@@ -20,7 +20,7 @@ logger = init_logger(__name__)
 
 RunnerType = Literal["generate", "pooling", "draft"]
 SchedulerPolicy = Literal["fcfs", "priority"]
-PreemptionPolicy = Literal["default", "recompute_aware"]
+PreemptionPolicy = Literal["default", "recompute_aware", "reclaimable_aware"]
 PrefixCacheEvictionPolicy = Literal[
     "lru", "waiting_queue_aware", "priority_aware"
 ]
@@ -119,7 +119,11 @@ class SchedulerConfig:
       tier (priority is a hard constraint), protects requests that have
       already been preempted, and then minimizes recompute cost within that
       tier. In priority scheduling, preempted requests are also re-admitted
-      before fresh requests in the same user-priority tier."""
+      before fresh requests in the same user-priority tier.
+    - "reclaimable_aware" additionally prefers victims whose immediately
+      reclaimable KV blocks satisfy or reduce the current allocation shortfall.
+      If immediate reclaimability cannot help, it falls back to the
+      "recompute_aware" ordering."""
 
     prefix_cache_eviction_policy: PrefixCacheEvictionPolicy = "lru"
     """The eviction preference applied when allocating blocks that may evict

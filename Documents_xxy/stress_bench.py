@@ -124,6 +124,14 @@ async def fetch_metrics(session: aiohttp.ClientSession) -> dict:
                 "vllm:kv_admission_admitted_reordered_total",
                 "vllm:kv_admission_admitted_aged_total",
                 "vllm:kv_admission_admitted_cached_tokens_total",
+                "vllm:kv_preemption_shortfall_events_total",
+                "vllm:kv_preemption_shortfall_blocks_total",
+                "vllm:kv_preemption_candidate_estimates_total",
+                "vllm:kv_preemption_deferred_candidates_total",
+                "vllm:kv_preemption_reclaimable_blocks_total",
+                "vllm:kv_preemption_selected_reclaimable_blocks_total",
+                "vllm:kv_preemption_sufficient_selections_total",
+                "vllm:kv_preemption_zero_progress_selections_total",
                 "vllm:scheduling_feature_prefix_requests_total",
                 "vllm:scheduling_feature_prefix_resolutions_total",
                 "vllm:scheduling_feature_prefix_cache_hits_total",
@@ -402,6 +410,32 @@ async def main():
                 "vllm:kv_admission_admitted_cached_tokens_total"
             ),
         },
+        "kv_preemption": {
+            "shortfall_events": delta(
+                "vllm:kv_preemption_shortfall_events_total"
+            ),
+            "shortfall_blocks": delta(
+                "vllm:kv_preemption_shortfall_blocks_total"
+            ),
+            "candidate_estimates": delta(
+                "vllm:kv_preemption_candidate_estimates_total"
+            ),
+            "deferred_candidates": delta(
+                "vllm:kv_preemption_deferred_candidates_total"
+            ),
+            "reclaimable_blocks": delta(
+                "vllm:kv_preemption_reclaimable_blocks_total"
+            ),
+            "selected_reclaimable_blocks": delta(
+                "vllm:kv_preemption_selected_reclaimable_blocks_total"
+            ),
+            "sufficient_selections": delta(
+                "vllm:kv_preemption_sufficient_selections_total"
+            ),
+            "zero_progress_selections": delta(
+                "vllm:kv_preemption_zero_progress_selections_total"
+            ),
+        },
         "scheduling_features": {
             "prefix_requests": delta(
                 "vllm:scheduling_feature_prefix_requests_total"
@@ -448,6 +482,7 @@ async def main():
     )
     print(f"保留  {summary['retention']}")
     print(f"准入  {summary['admission']}")
+    print(f"KV抢占  {summary['kv_preemption']}")
     print(f"特征  {summary['scheduling_features']}")
     if err:
         print(f"错误示例: {summary['errors_detail'][:2]}")
