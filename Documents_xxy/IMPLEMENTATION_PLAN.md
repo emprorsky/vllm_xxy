@@ -1,6 +1,7 @@
 # vLLM V1 Adaptive KV-Aware Serving 统一实施计划
 
-> 状态：Phase 1 至 Phase 5c correctness Gate 已完成；Phase 5c 在固定 RTX 4090
+> 状态：Phase 1 至 Phase 5c correctness Gate 已完成，Phase 6 measurement Gate
+> 已完成；Phase 5c 在固定 RTX 4090
 > 高 KV 压力场景的两对反向顺序 A/B 中，吞吐均值提升 2.797%、wall time
 > 降低 2.722%、抢占次数均值降低 8.258%，通过当前场景的性能 Gate；Phase 2
 > 性能 Gate 未通过，Phase 3/4/5a 的性能信号尚未完成稳定统计验收。详见
@@ -10,7 +11,8 @@
 > [`PHASE4_IMPLEMENTATION_REPORT_CODEX.md`](PHASE4_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE5A_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5A_IMPLEMENTATION_REPORT_CODEX.md)、
 > [`PHASE5B_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5B_IMPLEMENTATION_REPORT_CODEX.md)、
-> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)。
+> [`PHASE5C_IMPLEMENTATION_REPORT_CODEX.md`](PHASE5C_IMPLEMENTATION_REPORT_CODEX.md)、
+> [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1107,6 +1109,17 @@ Before broadening the claim, repeat across another model/pressure shape and add
 Scheduler CPU decision-cost measurements.
 
 ### I.6 Phase 6: Scheduler CPU performance
+
+> 实施状态（2026-08-29）：measurement Gate 已完成。真实
+> `Request + KVCacheManager + refcount estimator` 单核 microbenchmark 中，34
+> blocks/candidate 下 `reclaimable_aware` 单次决策在 N=8/16/64/256 分别为
+> 120.264/246.947/983.002/3807.596 us，近似线性；按 Phase 5c 实际约 28 个
+> candidates、约 506 次 shortfall 估算，累计约 0.22 s，仅约 serving wall
+> time 的 0.11%。官方 `vllm bench serve` 在 1250 blocks 复现吞吐 +2.091%，
+> 但 1000 blocks 下为 -0.596%；不同 latency/preemption 指标方向混合。因此 CPU
+> overhead 可接受，但跨 KV budget 的 generalized performance Gate 未通过，
+> 不应继续扩大“稳定 +2.8%”的适用范围。详见
+> [`PHASE6_IMPLEMENTATION_REPORT_CODEX.md`](PHASE6_IMPLEMENTATION_REPORT_CODEX.md)。
 
 Measure before optimizing. Use request counts 1/8/16/64/256 and report:
 
