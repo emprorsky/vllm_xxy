@@ -337,7 +337,6 @@ void fused_add_rms_norm(torch::stable::Tensor& input,     // [..., hidden_size]
   const bool batch_invariant_launch = vllm::vllm_is_batch_invariant();
   const int max_block_size =
       batch_invariant_launch ? 1024 : ((num_tokens < 256) ? 1024 : 256);
-  dim3 block(std::min(hidden_size, max_block_size));
   const torch::stable::accelerator::DeviceGuard device_guard(
       input.get_device_index());
   const cudaStream_t stream = get_current_cuda_stream();
@@ -356,8 +355,10 @@ void fused_add_rms_norm(torch::stable::Tensor& input,     // [..., hidden_size]
                             wt_ptr % req_alignment_bytes == 0;
     if (ptrs_are_aligned && offsets_are_multiple_of_vector_width &&
         !batch_invariant_launch) {
+      dim3 block(std::min(hidden_size / vector_width, max_block_size));
       LAUNCH_FUSED_ADD_RMS_NORM(8, true);
     } else {
+      dim3 block(std::min(hidden_size, max_block_size));
       LAUNCH_FUSED_ADD_RMS_NORM(0, true);
     }
   } else {
@@ -365,8 +366,10 @@ void fused_add_rms_norm(torch::stable::Tensor& input,     // [..., hidden_size]
                             res_ptr % req_alignment_bytes == 0;
     if (ptrs_are_aligned && offsets_are_multiple_of_vector_width &&
         !batch_invariant_launch) {
+      dim3 block(std::min(hidden_size / vector_width, max_block_size));
       LAUNCH_FUSED_ADD_RMS_NORM(8, false);
     } else {
+      dim3 block(std::min(hidden_size, max_block_size));
       LAUNCH_FUSED_ADD_RMS_NORM(0, false);
     }
   }

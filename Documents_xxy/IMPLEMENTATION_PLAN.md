@@ -34,7 +34,9 @@
 > [`PHASE6F_KV_BUDGET_REPORT_CODEX.md`](PHASE6F_KV_BUDGET_REPORT_CODEX.md)、
 > [`PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md`](PHASE6G_WINDOW_SWEEP_REPORT_CODEX.md)、
 > [`PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md`](PHASE6H_PREFIX_DIVERSITY_REPORT_CODEX.md)、
-> [`PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md`](PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md)。
+> [`PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md`](PHASE6I_MECHANISM_ATTRIBUTION_REPORT_CODEX.md)、
+> [`PHASE7_KERNEL_OPTIMIZATION_REPORT_CODEX.md`](PHASE7_KERNEL_OPTIMIZATION_REPORT_CODEX.md)和
+> [`PHASE8_OPERATOR_OPTIMIZATION_REPORT_CODEX.md`](PHASE8_OPERATOR_OPTIMIZATION_REPORT_CODEX.md)。
 > 适用仓库：`/root/autodl-tmp/repos/vllm`
 > 勘察日期：2026-08-28 (UTC)
 > 原则：Policy 只做 decision；Scheduler/KV core 仍然负责所有 correctness-critical mutation。
@@ -1247,6 +1249,31 @@ Do not keep a perf patch without repeatable evidence.
 
 ### I.7 Phase 7: optional RTX 4090 KV-write kernel
 
+> 实施状态（2026-08-30）：**完成并通过 Gate**。生产
+> `reshape_and_cache_flash` 在 Qwen2.5-7B 的 BF16/NHD、4 KV heads、head size
+> 128 形状上，原 launcher 为 512 threads，但 16-byte 向量化后只有 64 threads
+> 执行有效拷贝。新增严格对齐和布局 gate 后按有效向量数选择 block size，FP8、
+> HND、per-head scale 和非对齐 row 保留原 fallback。同工具链 CUPTI A/B 中，
+> 1024 token 从 9.569 us 降至 6.592 us（1.45x），2048 token 从 16.495 us
+> 降至 11.871 us（1.39x）；完整 CUDA/tensor/NHD/auto 子矩阵 36 passed，另有
+> unaligned/fallback/非连续输入验证。微基准收益不等同于服务吞吐收益，按 28 层
+> 粗估只节省 83～129 us/prefill，因此不再追加 Phase 7b。完整证据见
+> `Documents_xxy/PHASE7_KERNEL_OPTIMIZATION_REPORT_CODEX.md`。
+
+### I.8 Phase 8: bounded operator optimization follow-up
+
+> 实施状态（2026-08-30）：**完成并通过算子 Gate**。本阶段只选择
+> Qwen2.5-7B 每层真实调用的 fused add + RMSNorm 和 RoPE，没有继续扩张
+> 算子范围。RMSNorm aligned vector path 按 `hidden_size / vector_width`
+> 选择 block threads，1～64 token 获得 1.01x～1.04x，大 shape 基本持平；
+> RoPE 在严格 alignment/dtype/layout 条件下新增 16-byte 向量化的
+> head-parallel/token-parallel 双路径，保留 BF16 cache 与原 scalar fallback。
+> fused-QKV 真实 stride 的 5-trial CUPTI A/B 在 1～4096 token 获得
+> 1.13x～1.84x；RMSNorm 324 项、RoPE fast path 6 项和通用 fallback 384 项
+> 回归通过。首轮 256-token 切换点曾退化约 52%，实测交点修正为
+> 4096 后停止阈值扫描。完整证据见
+> `Documents_xxy/PHASE8_OPERATOR_OPTIMIZATION_REPORT_CODEX.md`。
+
 Reconnaissance at this commit found:
 
 ```text
@@ -1528,6 +1555,7 @@ recorded runs show preemptions 135/135/96 and output-chunk throughput roughly
 | 5 Advanced KV | shared/repeated/deferred reclaim tests | disable on unsupported hybrid/deferred path |
 | 6 CPU perf | measured overhead and evidence-backed patch | document profile only if no bottleneck |
 | 7 Kernel | correctness + repeated representative 4090 speedup | no kernel commit if gain is absent/mixed |
+| 8 Operators | production shape + exact A/B + fast-path/fallback regressions | stop after two operators; no third op without serving/profile evidence |
 
 Global stop conditions:
 
@@ -1609,28 +1637,27 @@ understand every changed line.
    nonstandard. Mitigation: keep it as a pressure harness and use built-in bench
    output for final claims.
 
-### First implementation action after approval
+### Current next action after Phase 8
 
-Start only Gate 1:
+Phase 1～8 的实现与本机验收已经完成。下一步不再增加调度 heuristic 或
+第三个算子，而是按以下顺序完成收口：
 
-1. create the required `.venv` and reproduce current policy tests;
-2. add the two missing tests that expose raw-count vs binary protection and
-   nondeterministic final ties;
-3. stabilize policy key;
-4. implement keyed Priority re-admission without modifying `Request.__lt__`;
-5. run the full Gate 1 test list and review the diff;
-6. commit/push one logical change at a time.
-
-No Phase 2 code begins until Gate 1 is reviewed and accepted.
+1. 使用当前 KV write + RMSNorm + RoPE 组合做一组完整 serving A/B，
+   确定局部 kernel 收益在端到端中是可见还是被 GEMM/Attention 淹没；
+2. 有 A100/H100 资源时重测 RoPE head/token 两条曲线，不把 SM89 的
+   4096-token 交点当成跨硬件常数；
+3. 整理两个逻辑提交：文档/面试材料与 Phase 8 生产代码、测试和
+   benchmark；
+4. 没有新 profiler 证据前停止继续扩张。
 
 ---
 
-## O. Phase 0 conclusion
+## O. Historical Phase 0 conclusion
 
 The current work is a useful and directionally correct foundation. The best
 engineering choice is to continue from it, while explicitly treating the
 existing recompute-aware commit as a measured prototype whose policy semantics,
 queue integration and evaluation methodology still need stabilization.
 
-**No business code was modified during this Phase 0 inspection. Await approval
-before entering Phase 1.**
+以下是本文创建时的历史结论：Phase 0 当时只完成勘察，未修改业务代码。
+该状态已被文首的 Phase 1～8 实施结果取代，不再是当前待办。

@@ -122,6 +122,56 @@ def test_rotary_embedding(
         assert ref_key is None and out_key is None, "expected returned key to be None"
 
 
+@pytest.mark.parametrize("num_tokens", [1, 257, 4096])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@torch.inference_mode()
+def test_qwen_rotary_embedding_fast_path(
+    default_vllm_config,
+    num_tokens: int,
+    dtype: torch.dtype,
+) -> None:
+    head_size = 128
+    num_q_heads = 28
+    num_kv_heads = 4
+    max_position = 8192
+    rope = get_rope(
+        head_size,
+        max_position,
+        True,
+        {"rope_type": "default", "rope_theta": 10000},
+    ).to(dtype=dtype, device="cuda")
+    positions = torch.randint(0, max_position, (num_tokens,), device="cuda")
+    qkv = torch.randn(
+        num_tokens,
+        (num_q_heads + 2 * num_kv_heads) * head_size,
+        dtype=dtype,
+        device="cuda",
+    )
+    query, key, _ = qkv.split(
+        [
+            num_q_heads * head_size,
+            num_kv_heads * head_size,
+            num_kv_heads * head_size,
+        ],
+        dim=-1,
+    )
+
+    ref_query, ref_key = rope.forward_native(positions, query, key)
+    out_query, out_key = rope.forward(query=query, key=key, positions=positions)
+    torch.testing.assert_close(
+        out_query,
+        ref_query,
+        atol=get_default_atol(out_query),
+        rtol=get_default_rtol(out_query),
+    )
+    torch.testing.assert_close(
+        out_key,
+        ref_key,
+        atol=get_default_atol(out_key),
+        rtol=get_default_rtol(out_key),
+    )
+
+
 @torch.inference_mode()
 def test_rope_module_cache(default_vllm_config):
     MAX_POSITIONS = [123, 1234]

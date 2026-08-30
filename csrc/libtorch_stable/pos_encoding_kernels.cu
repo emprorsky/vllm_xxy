@@ -73,6 +73,109 @@ inline __device__ void apply_rotary_embedding(
   }
 }
 
+template <typename T, int N>
+struct alignas(16) AlignedVector {
+  T data[N];
+};
+
+template <typename scalar_t, int VEC_SIZE>
+inline __device__ void apply_neox_rotary_embedding_vector(
+    scalar_t* __restrict__ head, const scalar_t* __restrict__ cos_ptr,
+    const scalar_t* __restrict__ sin_ptr, const int vector_offset,
+    const bool inverse) {
+  constexpr int kHalfRotaryDim = 64;
+  using vector_t = AlignedVector<scalar_t, VEC_SIZE>;
+  const int pair_offset = vector_offset < kHalfRotaryDim
+                              ? vector_offset + kHalfRotaryDim
+                              : vector_offset - kHalfRotaryDim;
+  const int cache_offset = vector_offset % kHalfRotaryDim;
+  const vector_t values =
+      *reinterpret_cast<const vector_t*>(head + vector_offset);
+  const vector_t paired =
+      *reinterpret_cast<const vector_t*>(head + pair_offset);
+  const vector_t cos_values =
+      *reinterpret_cast<const vector_t*>(cos_ptr + cache_offset);
+  const vector_t sin_values =
+      *reinterpret_cast<const vector_t*>(sin_ptr + cache_offset);
+  __syncwarp(__activemask());
+
+  vector_t output;
+#pragma unroll
+  for (int i = 0; i < VEC_SIZE; ++i) {
+    const float value_f = static_cast<float>(values.data[i]);
+    const float paired_f = static_cast<float>(paired.data[i]);
+    const float cos_f = static_cast<float>(cos_values.data[i]);
+    float sin_f = static_cast<float>(sin_values.data[i]);
+    if (inverse) {
+      sin_f = -sin_f;
+    }
+    const float signed_sin =
+        vector_offset < kHalfRotaryDim ? -sin_f : sin_f;
+    output.data[i] =
+        static_cast<scalar_t>(value_f * cos_f + paired_f * signed_sin);
+  }
+  *reinterpret_cast<vector_t*>(head + vector_offset) = output;
+}
+
+template <typename scalar_t, int VEC_SIZE>
+__global__ void neox_rotary_embedding_head_parallel_kernel(
+    const int64_t* __restrict__ positions, scalar_t* __restrict__ query,
+    scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ cos_sin_cache, const int num_tokens,
+    const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const bool inverse) {
+  constexpr int kRotaryDim = 128;
+  const int token_idx = blockIdx.x * blockDim.y + threadIdx.y;
+  if (token_idx >= num_tokens) {
+    return;
+  }
+  const int head_idx = blockIdx.y;
+  scalar_t* head;
+  if (head_idx < num_heads) {
+    head = query + token_idx * query_stride + head_idx * head_stride;
+  } else {
+    head = key + token_idx * key_stride +
+           (head_idx - num_heads) * head_stride;
+  }
+  const int64_t position = positions[token_idx];
+  const scalar_t* cache = cos_sin_cache + position * kRotaryDim;
+  const int vector_offset = threadIdx.x * VEC_SIZE;
+  apply_neox_rotary_embedding_vector<scalar_t, VEC_SIZE>(
+      head, cache, cache + kRotaryDim / 2, vector_offset, inverse);
+}
+
+template <typename scalar_t, int VEC_SIZE>
+__global__ void neox_rotary_embedding_token_parallel_kernel(
+    const int64_t* __restrict__ positions, scalar_t* __restrict__ query,
+    scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ cos_sin_cache, const int num_tokens,
+    const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const bool inverse) {
+  constexpr int kRotaryDim = 128;
+  const int token_idx = blockIdx.x * blockDim.y + threadIdx.y;
+  if (token_idx >= num_tokens) {
+    return;
+  }
+  const int64_t position = positions[token_idx];
+  const scalar_t* cache = cos_sin_cache + position * kRotaryDim;
+  const int vector_offset = threadIdx.x * VEC_SIZE;
+  const scalar_t* cos_ptr = cache;
+  const scalar_t* sin_ptr = cache + kRotaryDim / 2;
+
+  for (int head_idx = 0; head_idx < num_heads; ++head_idx) {
+    scalar_t* head =
+        query + token_idx * query_stride + head_idx * head_stride;
+    apply_neox_rotary_embedding_vector<scalar_t, VEC_SIZE>(
+        head, cos_ptr, sin_ptr, vector_offset, inverse);
+  }
+  for (int head_idx = 0; head_idx < num_kv_heads; ++head_idx) {
+    scalar_t* head = key + token_idx * key_stride + head_idx * head_stride;
+    apply_neox_rotary_embedding_vector<scalar_t, VEC_SIZE>(
+        head, cos_ptr, sin_ptr, vector_offset, inverse);
+  }
+}
+
 template <typename scalar_t, typename cache_t, bool IS_NEOX>
 __global__ void rotary_embedding_kernel(
     const int64_t* __restrict__ positions,  // [batch_size, seq_len] or
@@ -164,11 +267,61 @@ void rotary_embedding(
   int64_t head_stride =
       (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
 
-  dim3 grid(num_tokens);
-  dim3 block(std::min<int64_t>(num_heads * rot_dim / 2, 512));
   const torch::stable::accelerator::DeviceGuard device_guard(
       query.get_device_index());
   const cudaStream_t stream = get_current_cuda_stream();
+  constexpr int vector_width = 8;
+  constexpr int vector_alignment = vector_width * 2;
+  const bool can_vectorize =
+      key.has_value() && positions_ndim == 1 && is_neox && head_size == 128 &&
+      rot_dim == 128 && rope_dim_offset == 0 &&
+      query.scalar_type() == key->scalar_type() &&
+      query.scalar_type() == cos_sin_cache.scalar_type() &&
+      query.element_size() == 2 && positions.stride(0) == 1 &&
+      cos_sin_cache.stride(1) == 1 && query_stride % vector_width == 0 &&
+      key_stride % vector_width == 0 && head_stride % vector_width == 0 &&
+      reinterpret_cast<uintptr_t>(query.mutable_data_ptr()) % vector_alignment ==
+          0 &&
+      reinterpret_cast<uintptr_t>(key->mutable_data_ptr()) % vector_alignment ==
+          0 &&
+      reinterpret_cast<uintptr_t>(cos_sin_cache.const_data_ptr()) %
+              vector_alignment ==
+          0;
+  if (can_vectorize) {
+    constexpr int threads_x = 128 / vector_width;
+    constexpr int threads_y = 8;
+    dim3 block(threads_x, threads_y);
+    dim3 grid((num_tokens + threads_y - 1) / threads_y);
+    VLLM_STABLE_DISPATCH_FLOATING_TYPES(
+        query.scalar_type(), "rotary_embedding_vector", [&] {
+          using query_t = scalar_t;
+          if (num_tokens < 4096) {
+            grid.y = num_heads + num_kv_heads;
+            vllm::neox_rotary_embedding_head_parallel_kernel<query_t,
+                                                              vector_width>
+                <<<grid, block, 0, stream>>>(
+                    positions.const_data_ptr<int64_t>(),
+                    query.mutable_data_ptr<query_t>(),
+                    key->mutable_data_ptr<query_t>(),
+                    cos_sin_cache.const_data_ptr<query_t>(), num_tokens,
+                    query_stride, key_stride, head_stride, num_heads, inverse);
+          } else {
+            vllm::neox_rotary_embedding_token_parallel_kernel<query_t,
+                                                               vector_width>
+                <<<grid, block, 0, stream>>>(
+                    positions.const_data_ptr<int64_t>(),
+                    query.mutable_data_ptr<query_t>(),
+                    key->mutable_data_ptr<query_t>(),
+                    cos_sin_cache.const_data_ptr<query_t>(), num_tokens,
+                    query_stride, key_stride, head_stride, num_heads,
+                    num_kv_heads, inverse);
+          }
+        });
+    return;
+  }
+
+  dim3 grid(num_tokens);
+  dim3 block(std::min<int64_t>(num_heads * rot_dim / 2, 512));
   VLLM_STABLE_DISPATCH_FLOATING_TYPES(
       query.scalar_type(), "rotary_embedding", [&] {
         using query_t = scalar_t;
