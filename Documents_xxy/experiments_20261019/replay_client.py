@@ -160,8 +160,28 @@ async def replay(args):
                         if not result["success"]:
                             break
 
-            await asyncio.gather(*(session_run(session) for session in groups.values()))
-        elapsed = time.perf_counter() - start
+            tasks = [
+                asyncio.create_task(session_run(session)) for session in groups.values()
+            ]
+            latest_count = 0
+            latest_progress = time.monotonic()
+            try:
+                while any(not task.done() for task in tasks):
+                    await asyncio.sleep(1)
+                    if len(results) != latest_count:
+                        latest_count = len(results)
+                        latest_progress = time.monotonic()
+                    if time.monotonic() - latest_progress > 90:
+                        raise TimeoutError("no request completed for 90 seconds")
+                await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        elapsed = (
+            max((r["clock_end"] for r in results), default=time.perf_counter()) - start
+        )
         after = {}
         for endpoint in before:
             try:

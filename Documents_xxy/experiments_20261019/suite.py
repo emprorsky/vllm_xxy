@@ -79,6 +79,8 @@ def local_policy(config):
 
 
 def offload(config, mode, capacity_gib):
+    # Bound resident requests while retaining inter-request CPU/GPU eviction.
+    config["server_args"] += ["--max-num-seqs", "2"]
     config["env"].update(
         {
             "LMCACHE_LOCAL_CPU": "True",
@@ -142,16 +144,19 @@ def cases(stage):
                 local_policy(config)
             result.append((name, config))
     elif stage == "offload":
-        for mode in ["none", "fixed", "conditioned"]:
+        for mode in ["off", "none", "fixed", "conditioned"]:
             config = configuration("public_coding", [3])
-            offload(config, mode, 0.5)
-            result.append((f"O_{mode}_cpu0p5", config))
+            if mode == "off":
+                config["server_args"] += ["--max-num-seqs", "2"]
+            else:
+                offload(config, mode, 0.5)
+            result.append((f"O_seq2_{mode}_cpu0p5", config))
     elif stage == "capacity":
         for capacity in [0.125, 3.0]:
             for mode in ["none", "conditioned"]:
                 config = configuration("public_coding", [3])
                 offload(config, mode, capacity)
-                result.append((f"O_{mode}_cpu{capacity}", config))
+                result.append((f"O_seq2_{mode}_cpu{capacity}", config))
     elif stage == "routing":
         for policy in ["load", "threshold", "work", "cost"]:
             config = configuration("hot", [2, 3])

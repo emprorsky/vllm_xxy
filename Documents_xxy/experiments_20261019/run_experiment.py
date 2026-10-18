@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from .replay_client import replay
+from .validate_outputs import validate
 
 
 async def wait_ready(port, process, timeout=300):
@@ -182,6 +183,14 @@ async def run(args):
             manifest["commands"].append({"argv": argv, "pid": process.pid})
             await wait_ready(port, process, 30)
             endpoint = f"http://127.0.0.1:{port}"
+        if config.get("validate_outputs", True):
+            validation_endpoints = [endpoint] if config.get("pd") else endpoints
+            await validate(
+                config["model"],
+                validation_endpoints,
+                args.output / "quality_probes.json",
+            )
+            manifest["basic_output_gate"] = "passed"
         manifest["status"] = "replaying"
         save()
         replay_args = argparse.Namespace(

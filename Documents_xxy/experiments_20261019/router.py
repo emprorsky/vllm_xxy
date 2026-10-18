@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,8 +23,9 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .policies import PlacementPolicy
 
 
-def create_app(args: argparse.Namespace) -> FastAPI:
-    policy = PlacementPolicy(
+def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
+    directory_source = getattr(args, "directory_source", "inferred_history")
+    policy = policy or PlacementPolicy(
         len(args.workers),
         args.policy,
         args.capacity_tokens,
@@ -55,7 +57,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         return {
             "policy": args.policy,
             "inflight": len(policy.reservations),
-            "directory_source": "inferred_history",
+            "directory_source": directory_source,
             "workers": args.workers,
         }
 
@@ -86,7 +88,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             "request_id": request_id,
             "worker": worker,
             "policy": args.policy,
-            "directory_source": "inferred_history",
+            "directory_source": directory_source,
             "timestamp": time.time(),
             "scores": [asdict(s) for s in scores],
         }
@@ -177,7 +179,13 @@ def main():
     parser.add_argument("--port", type=int, default=8190)
     parser.add_argument("--log", type=Path, required=True)
     args = parser.parse_args()
-    uvicorn.run(create_app(args), host="127.0.0.1", port=args.port, log_level="warning")
+    if os.environ.get("KVEXP_EVENT_ENDPOINTS"):
+        from .events_router import create_event_app
+
+        app = create_event_app(args, create_app)
+    else:
+        app = create_app(args)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

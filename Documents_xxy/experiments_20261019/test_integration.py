@@ -134,3 +134,54 @@ def test_adapter_sets_skip_before_base_tracker_and_freezes(monkeypatch):
     }
     adapter.get_num_new_matched_tokens(request, 0)
     assert len(adapter._log.getvalue().splitlines()) == 1
+
+
+@pytest.mark.parametrize("kind", ["router", "pd"])
+def test_cancellation_during_upstream_wait_releases_ledger(tmp_path, kind):
+    import asyncio
+
+    async def exercise():
+        ready = asyncio.Event()
+
+        class Waiting(Upstream):
+            async def send(self, *args, **kwargs):
+                ready.set()
+                await asyncio.Event().wait()
+
+            async def post(self, *args, **kwargs):
+                ready.set()
+                await asyncio.Event().wait()
+
+        if kind == "router":
+            app = router.create_app(router_args(tmp_path))
+        else:
+            args = argparse.Namespace(
+                prefillers=["http://p"],
+                decoders=["http://d"],
+                prefill_policy="rr",
+                decode_policy="work",
+                capacity_tokens=8192,
+                prefill_ms=0.1,
+                decode_ms=1,
+                log=tmp_path / "pd.jsonl",
+            )
+            app = pd_proxy.create_app(args)
+        async with app.router.lifespan_context(app):
+            app.state.client = Waiting(None)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                task = asyncio.create_task(
+                    client.post("/v1/completions", json={"prompt": [1] * 32})
+                )
+                await asyncio.wait_for(ready.wait(), 1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                health = (await client.get("/health")).json()
+                if kind == "router":
+                    assert health["inflight"] == 0
+                else:
+                    assert health["prefill_inflight"] == health["decode_inflight"] == 0
+
+    asyncio.run(exercise())

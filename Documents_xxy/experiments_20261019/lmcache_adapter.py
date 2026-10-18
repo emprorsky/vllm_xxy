@@ -158,6 +158,8 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
         if result[0] is None or request.request_id in self._admission.decisions:
             return result
         params = request.kv_transfer_params or {}
+        if params.get("experiment.phase") == "validation":
+            return result
         if "disagg_spec" in params or params.get("do_remote_decode"):
             self._log.write(
                 json.dumps({"event": "pd_bypass", "request_id": request.request_id})
