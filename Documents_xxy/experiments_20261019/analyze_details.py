@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .policies import percentile
+from .summarize import samples
 
 
 def describe(rows):
@@ -132,6 +133,29 @@ def analyze(run):
                 },
                 "scope": "proxy timestamps; not a kernel-only compute or DMA timer",
             }
+    metrics = json.loads((run / "replay/metrics.json").read_text())
+    roles = {}
+    for worker in manifest["config"]["workers"]:
+        endpoint = f"http://127.0.0.1:{worker['port']}"
+        before = samples(metrics["before"].get(endpoint, ""))
+        after = samples(metrics["after"].get(endpoint, ""))
+        selected = {}
+        for name in after:
+            if name.endswith(("_total", "_count", "_sum")) and any(
+                key in name
+                for key in [
+                    "nixl_",
+                    "request_prefill_kv_computed_tokens",
+                    "request_queue_time_seconds",
+                    "request_prefill_time_seconds",
+                    "request_decode_time_seconds",
+                    "resume_recompute_tokens",
+                    "num_preemptions",
+                ]
+            ):
+                selected[name] = after[name] - before.get(name, 0)
+        roles[f"{worker.get('role', 'replica')}_gpu{worker['gpu']}"] = selected
+    result["engine_counters_by_role"] = roles
     (run / "details.json").write_text(json.dumps(result, indent=2))
     return result
 
