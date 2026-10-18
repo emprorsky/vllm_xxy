@@ -1,0 +1,199 @@
+"""Summarize retained evidence; never treat failed runs as zero-valued successes."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import re
+import statistics
+from collections import Counter, defaultdict
+from contextlib import suppress
+from pathlib import Path
+
+SAMPLE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{.*\})?\s+([^\s]+)")
+
+
+def samples(text):
+    values = Counter()
+    for line in text.splitlines():
+        match = SAMPLE.match(line)
+        if match and not match[1].endswith("_created"):
+            with suppress(ValueError):
+                values[match[1]] += float(match[2])
+    return values
+
+
+def counters(path):
+    source = json.loads(path.read_text())
+    result = defaultdict(float)
+    for endpoint, after in source["after"].items():
+        before = samples(source["before"].get(endpoint, ""))
+        for name, value in samples(after).items():
+            if name.endswith(("_total", "_count", "_sum")):
+                result[name] += value - before.get(name, 0)
+    return dict(result)
+
+
+def collect(directory):
+    manifest = json.loads((directory / "manifest.json").read_text())
+    row = {"run": directory.name, "status": manifest["status"]}
+    if manifest["status"] != "completed":
+        row["error"] = manifest.get("error", "")
+        return row
+    data = json.loads((directory / "replay/result.json").read_text())
+    row.update(
+        {
+            key: data[key]
+            for key in [
+                "successful",
+                "elapsed_s",
+                "output_tok_s",
+                "request_goodput",
+                "qualified_requests",
+            ]
+        }
+    )
+    row["trace_sha256"] = data["trace_sha256"]
+    row["gpus"] = len(manifest["config"]["workers"])
+    for key in ["ttft_s", "tpot_s", "e2e_s"]:
+        for quantile, value in data[key].items():
+            row[f"{key}_{quantile}"] = value
+    metric = counters(directory / "replay/metrics.json")
+    (directory / "counter_deltas.json").write_text(json.dumps(metric, indent=2))
+    for name in [
+        "num_preemptions",
+        "kv_preemption_resume_recompute_tokens",
+        "kv_preemption_preempted_computed_tokens",
+        "prefix_cache_queries",
+        "prefix_cache_hits",
+        "external_prefix_cache_queries",
+        "external_prefix_cache_hits",
+    ]:
+        row[name] = metric.get(f"vllm:{name}_total", 0)
+    queries = row["prefix_cache_queries"]
+    row["gpu_prefix_hit_ratio"] = (
+        row["prefix_cache_hits"] / queries if queries else None
+    )
+    logs = "\n".join(
+        p.read_text(errors="replace") for p in directory.glob("server_*.log")
+    )
+    # These are completed data movement logs, not repeated lookup estimates.
+    row["cpu_stored_tokens"] = sum(
+        int(n) for n in re.findall(r"Stored (\d+) out of total", logs)
+    )
+    row["cpu_retrieved_tokens"] = sum(
+        int(n) for n in re.findall(r"Retrieved (\d+) out of", logs)
+    )
+    decisions = []
+    eviction_chunks = 0
+    for path in (directory / "admission").glob("*.jsonl"):
+        for line in path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("event") == "decision":
+                decisions.append(event)
+            elif event.get("event") == "capacity_eviction":
+                eviction_chunks += event["removed_chunks"]
+    row["admission_decisions"] = len(decisions)
+    row["admission_skips"] = sum(not e["save"] for e in decisions)
+    row["admission_pressure"] = sum(e["pressure"] for e in decisions)
+    row["cpu_eviction_chunks_observed"] = eviction_chunks
+    path = directory / "router_decisions.jsonl"
+    if path.exists():
+        events = [json.loads(x) for x in path.read_text().splitlines()]
+        for kind in ["dispatch", "prefill", "decode"]:
+            selected = [e for e in events if e.get("event") == kind]
+            if selected:
+                row[f"{kind}_workers"] = dict(Counter(e["worker"] for e in selected))
+        row["router_errors"] = sum(e.get("event") == "error" for e in events)
+    return row
+
+
+def summarize(root, output):
+    rows = []
+    for manifest in sorted(root.glob("*/manifest.json")):
+        try:
+            rows.append(collect(manifest.parent))
+        except (ValueError, KeyError, OSError) as exc:
+            rows.append(
+                {
+                    "run": manifest.parent.name,
+                    "status": "summary_error",
+                    "error": str(exc),
+                }
+            )
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "runs.json").write_text(json.dumps(rows, indent=2))
+    keys = list(dict.fromkeys(k for row in rows for k in row))
+    with (output / "runs.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, keys)
+        writer.writeheader()
+        writer.writerows(rows)
+    groups = defaultdict(list)
+    for row in rows:
+        if row["status"] == "completed":
+            groups[re.sub(r"_rep\d+$", "", row["run"])].append(row)
+    lines = [
+        "# 实验结果（自动汇总）",
+        "",
+        (
+            "仅包含 completed 运行；中位数，单次仅供筛选。"
+            "不同 trace/容量/硬件配置不可直接作策略 A/B。"
+        ),
+        "",
+        (
+            "| 配置 | n | tok/s | TTFT P95(s) | TPOT P95(ms) |"
+            " SLO goodput(req/s) | CPU读tokens | 保存过滤 |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    aggregate = {}
+    for name, group in groups.items():
+        metrics = {}
+        for key in [
+            "output_tok_s",
+            "ttft_s_p95",
+            "tpot_s_p95",
+            "request_goodput",
+            "cpu_retrieved_tokens",
+            "admission_skips",
+        ]:
+            values = [r[key] for r in group]
+            metrics[key] = {
+                "median": statistics.median(values),
+                "min": min(values),
+                "max": max(values),
+            }
+        aggregate[name] = {"n": len(group), "metrics": metrics}
+        med = {key: value["median"] for key, value in metrics.items()}
+        lines.append(
+            f"| {name} | {len(group)} | {med['output_tok_s']:.2f} | {med['ttft_s_p95']:.3f} | {med['tpot_s_p95'] * 1000:.2f} | {med['request_goodput']:.3f} | {med['cpu_retrieved_tokens']:.0f} | {med['admission_skips']:.0f} |"  # noqa: E501
+        )
+    failures = [r for r in rows if r["status"] != "completed"]
+    if failures:
+        lines += ["", "## 失败或仍在运行", ""] + [
+            f"- {r['run']}: {r['status']} {r.get('error', '')}" for r in failures
+        ]
+    (output / "summary.md").write_text("\n".join(lines) + "\n")
+    (output / "aggregate.json").write_text(json.dumps(aggregate, indent=2))
+    print(
+        json.dumps(
+            {
+                "runs": len(rows),
+                "completed": sum(r["status"] == "completed" for r in rows),
+                "output": str(output),
+            }
+        )
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    summarize(args.root, args.output)
+
+
+if __name__ == "__main__":
+    main()
