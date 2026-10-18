@@ -1436,6 +1436,13 @@ class EngineCoreProc(EngineCore):
 
     def _process_input_queue(self):
         """Exits when an engine step needs to be performed."""
+        # 【第2课 引擎模块与流式执行】
+        # 本函数是 Engine 主循环中的"消费者"：
+        # 生产者 process_input_sockets（后台输入线程）通过 ZMQ DEALER 从
+        # 前端 AsyncLLM 接收请求，并写入 input_queue；
+        # 这里作为消费者不断从 input_queue 取出请求，交给 _handle_client_request
+        # 进一步送入调度器(Scheduler)和执行器(Executor)处理。
+        # 两个线程通过 input_queue 这个生产者-消费者队列解耦。
 
         waited = False
         while not self.has_work() and self.is_running():
@@ -1450,7 +1457,9 @@ class EngineCoreProc(EngineCore):
                     waited = True
             block = self.process_input_queue_block
             try:
+                # 从共享的输入队列取出 (request_type, request) 二元组
                 req = self.input_queue.get(block=block)
+                # 分发到具体请求类型的处理逻辑（ADD / ABORT / UTILITY 等）
                 self._handle_client_request(*req)
             except queue.Empty:
                 break
@@ -1699,6 +1708,22 @@ class EngineCoreProc(EngineCore):
         ready_event: threading.Event,
     ):
         """Input socket IO thread."""
+        # 【第2课 引擎模块与流式执行 —— Engine 接收请求（DEALER/ROUTER 模式）】
+        # 本函数是 EngineCoreProc 的后台输入线程：
+        #   1) 为每个 input_address 创建一个 ZMQ DEALER 套接字，
+        #      与前端 AsyncMPClient 持有的 ROUTER 套接字配对，
+        #      构成"异步双工、按 identity 路由"的请求输入通道；
+        #   2) 用 zmq.Poller 对多个 DEALER 套接字做 I/O 多路复用，
+        #      单线程即可同时监听不同前端发来的请求，效率很高；
+        #   3) 初始化时先向 ROUTER 发送一条 ready_payload，
+        #      用于向前端"报到"：让 ROUTER 记住本 Engine 的 identity，
+        #      同时同步 max_model_len、num_gpu_blocks 等启动后配置。
+        #   4) 事件循环中：poller.poll() 返回有可读事件的套接字 ->
+        #      recv_multipart() 取出 (type_frame, *data_frames) ->
+        #      MsgpackDecoder 反序列化为 EngineCoreRequest / ABORT / UTILITY ->
+        #      put_nowait 到内部 input_queue，等主循环 _process_input_queue 消费。
+        # 角色说明：Engine 端 DEALER（connect） + 前端 AsyncMPClient 端 ROUTER（bind）。
+        # 这里的 DEALER/ROUTER 与课程里的 DEALER/ROUTER 示例完全对应。
 
         # Msgpack serialization decoding with optional tensor IPC receiver.
         add_request_decoder = MsgpackDecoder(
@@ -1707,6 +1732,8 @@ class EngineCoreProc(EngineCore):
         generic_decoder = MsgpackDecoder(oob_tensor_provider=self.tensor_ipc_receiver)
 
         with ExitStack() as stack, zmq.Context() as ctx:
+            # [1/5] 为每个输入地址创建一个带 identity 的 ZMQ DEALER 套接字，
+            # 用于接收来自前端 AsyncLLM（ROUTER 端）的请求。
             input_sockets = [
                 stack.enter_context(
                     make_zmq_socket(
@@ -1731,14 +1758,20 @@ class EngineCoreProc(EngineCore):
                 coord_socket.send(b"\x01")
 
             # Register sockets with poller.
+            # [2/5] 创建 zmq.Poller 做 I/O 多路复用（课程重点：相当于 epoll/kqueue），
+            # 把套接字是否就绪的监控下沉到内核态，避免用户态忙等。
             poller = zmq.Poller()
+            # 组装"Engine 已就绪"消息：向前端报到 + 同步配置。
             ready_response = self._make_ready_response()
             ready_payload = msgspec.msgpack.encode(ready_response)
             for input_socket in input_sockets:
                 # Send initial message to each input socket - this is required
                 # before the front-end ROUTER socket can send input messages
                 # back to us.
+                # [关键点] 先发 ready_payload，让 ROUTER 记住本 DEALER 的 identity，
+                # 否则 ROUTER 不知道该把请求路由到哪个 Engine。
                 input_socket.send(ready_payload)
+                # 将每个 DEALER socket 注册到 poller，监听"可读"事件。
                 poller.register(input_socket, zmq.POLLIN)
 
             if coord_socket is not None:
@@ -1749,8 +1782,13 @@ class EngineCoreProc(EngineCore):
             ready_event.set()
             del ready_event
             while True:
+                # [3/5] 事件驱动主循环：poller.poll() 阻塞等待直到有 socket 可读。
                 for input_socket, _ in poller.poll():
                     # (RequestType, RequestData)
+                    # 【第2课】接收 ROUTER 发来的多段消息：
+                    # ROUTER 会自动把客户端 identity 附加在消息前面，
+                    # 但 DEALER 端 recv_multipart 已经把 identity 去掉，
+                    # 这里直接看到业务帧：类型帧 + 数据帧。
                     type_frame, *data_frames = input_socket.recv_multipart(copy=False)
                     # NOTE(yongji): ignore READY message sent by DP coordinator
                     # that is used to notify newly started engines
@@ -1760,6 +1798,8 @@ class EngineCoreProc(EngineCore):
                     request_type = EngineCoreRequestType(bytes(type_frame.buffer))
 
                     # Deserialize the request data.
+                    # [4/5] 根据请求类型选择解码器：ADD 请求用 EngineCoreRequest 强类型解码器，
+                    # 其他(ABORT / UTILITY)用通用解码器。
                     request: Any
                     if request_type == EngineCoreRequestType.ADD:
                         req: EngineCoreRequest = add_request_decoder.decode(data_frames)
@@ -1792,12 +1832,28 @@ class EngineCoreProc(EngineCore):
                             self.aborts_queue.put_nowait(request)
 
                     # Push to input queue for core busy loop.
+                    # [5/5] 将解码后的请求以 (request_type, request) 形式放入内部输入队列，
+                    # 由主循环 _process_input_queue（消费者）取出并进一步调度执行。
                     self.input_queue.put_nowait((request_type, request))
 
     def process_output_sockets(
         self, output_paths: list[str], coord_output_path: str | None, engine_index: int
     ):
         """Output socket IO thread."""
+        # 【第2课 引擎模块与流式执行 —— Engine 发送结果（PUSH/PULL 模式）】
+        # 本函数是 EngineCoreProc 的后台输出线程，对应课程"Engine 发送数据"节：
+        #   - 输入请求通过 DEALER/ROUTER 进入 Engine；
+        #   - 推理输出则通过另一条独立的 ZMQ PUSH/PULL 通道回传前端：
+        #     Engine 端是 PUSH（生产者），前端 AsyncMPClient 端是 PULL（消费者），
+        #     构成一条单向、流式的"结果推送管道"，与课程 PUSH/PULL 示例一致。
+        # 流程：
+        #   1) 为每个 output_path 创建 ZMQ PUSH socket（linger=4000 保证 ENGINE_CORE_DEAD
+        #      这类关键消息在 socket 关闭前被发送出去）；
+        #   2) 死循环从 output_queue 取 (client_index, EngineCoreOutputs)；
+        #   3) 根据 client_index 选择对应的 PUSH socket，
+        #      把结果 msgpack 编码后以 multipart 零拷贝方式 send 给前端 PULL 端。
+        # 注：Engine 每产生一批 token（模型每 step 一次），就会把 output
+        #   放入 output_queue，这里立即推送，从而实现"边推理边产出"的流式输出。
 
         # Msgpack serialization encoding.
         encoder = MsgpackEncoder()
@@ -1812,6 +1868,7 @@ class EngineCoreProc(EngineCore):
         # We must set linger to ensure the ENGINE_CORE_DEAD
         # message is sent prior to closing the socket.
         with ExitStack() as stack, zmq.Context() as ctx:
+            # [1/4] 为每个客户端输出地址创建一个 PUSH socket（单向发送）。
             sockets = [
                 stack.enter_context(
                     make_zmq_socket(ctx, output_path, zmq.PUSH, linger=4000)
@@ -1830,12 +1887,17 @@ class EngineCoreProc(EngineCore):
             max_reuse_bufs = len(sockets) + 1
 
             while True:
+                # [2/4] 从 Engine 内部输出队列阻塞等待下一批结果。
+                # 上游是 _process_engine_step / 调度统计：每 step 结束都会把
+                # EngineCoreOutputs 按 client_index 分类塞进这个队列。
                 output = self.output_queue.get()
                 if output == EngineCoreProc.ENGINE_CORE_DEAD:
                     for socket in sockets:
                         socket.send(output)
                     break
                 assert not isinstance(output, bytes)
+                # [3/4] 拆分出 client_index（决定推送给哪个前端 PULL 端）
+                # 和 outputs（批量 EngineCoreOutputs，带 request_id、新 token 等）。
                 client_index, outputs = output
                 outputs.engine_index = engine_index
 
@@ -1847,12 +1909,14 @@ class EngineCoreProc(EngineCore):
                     continue
 
                 # Reclaim buffers that zmq is finished with.
+                # 回收已发送完成的 buffer，减少内存分配开销（zero-copy hot path）。
                 while pending and pending[-1][0].done:
                     reclaimed = pending.pop()[1]
                     if len(reuse_buffers) < max_reuse_bufs:
                         reuse_buffers.append(reclaimed)
 
                 buffer = reuse_buffers.pop() if reuse_buffers else bytearray()
+                # [4/4] msgpack 编码 + zero-copy PUSH 到对端 AsyncMPClient 的 PULL socket。
                 buffers = encoder.encode_into(outputs, buffer)
                 tracker = self._send_msg_tracking_payload(
                     sockets[client_index], buffers

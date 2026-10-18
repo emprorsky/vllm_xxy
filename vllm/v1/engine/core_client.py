@@ -554,6 +554,12 @@ class MPClient(EngineCoreClient):
                 self.input_socket = self.resources.input_socket = make_zmq_socket(
                     self.ctx,
                     input_address,
+                    # 【第2课 引擎模块与流式执行 —— AsyncLLM 发送请求（ROUTER 端）】
+                    # 前端 AsyncMPClient 这里创建 ROUTER socket 并 bind，
+                    # 与 Engine 端的 DEALER（connect 端）形成一对多可路由的输入通道。
+                    # 每个 Engine 的 DEALER 先发送 ready 消息报到，
+                    # ROUTER 就记住其 identity；后续 add_request_async 发送请求时，
+                    # 消息会被 ROUTER 精确路由到对应 identity 的 Engine 上。
                     zmq.ROUTER,
                     bind=True,
                     router_handover=enable_input_socket_handover,
@@ -589,11 +595,20 @@ class MPClient(EngineCoreClient):
                 self.input_socket = self.resources.input_socket = make_zmq_socket(
                     self.ctx,
                     addresses.inputs[0],
+                    # 【第2课 引擎模块与流式执行 —— AsyncLLM 发送请求（ROUTER 端，自建 Engine）】
+                    # 此处和上面分支角色相同：前端 bind ROUTER，Engine connect DEALER，
+                    # 形成可按 identity 路由的请求通道；这里是"由客户端自己启动 Engine"的路径。
                     zmq.ROUTER,
                     bind=True,
                     router_handover=enable_input_socket_handover,
                 )
                 self.resources.output_socket = make_zmq_socket(
+                    # 【第2课 引擎模块与流式执行 —— AsyncLLM 接收结果（PULL 端）】
+                    # 此 PULL socket 与 Engine 端的 PUSH socket 配对：
+                    # Engine 每 step 产生的新 token 会被 PUSH 到这里，
+                    # process_outputs_socket 协程持续 recv_multipart，
+                    # 解码后放入客户端公共 outputs_queue，再被 AsyncLLM.output_handler
+                    # 取出并分发到每个请求自己的专属队列中。
                     self.ctx, addresses.outputs[0], zmq.PULL
                 )
 
@@ -1041,8 +1056,14 @@ class AsyncMPClient(MPClient):
         async def process_outputs_socket():
             try:
                 while True:
+                    # 【第2课 —— 拉取 Engine 推理结果（PULL 端持续接收）】
+                    # 前端持有的 output_socket 是 zmq.PULL，它与 Engine 端 process_output_sockets
+                    # 里的 zmq.PUSH 配对；Engine 每次模型 step 完成后，就会把
+                    # 新产生的一批 token（按 request_id 分组的 EngineCoreOutputs）
+                    # 以 multipart message 的形式推送过来。
                     frames = await output_socket.recv_multipart(copy=False)
                     resources.validate_alive(frames)
+                    # 反序列化：消息帧 -> 强类型 EngineCoreOutputs 对象
                     outputs: EngineCoreOutputs = decoder.decode(frames)
                     if outputs.utility_output:
                         if (
@@ -1083,6 +1104,11 @@ class AsyncMPClient(MPClient):
                             return
                         await output_handler(_self, outputs)
 
+                    # 【第2课】把带有批量推理输出的 EngineCoreOutputs
+                    # 放入 AsyncMPClient 的公共 outputs_queue。
+                    # 注意：这里还没有按 request_id 拆分到各请求自己的队列，
+                    # 拆分与后处理由 AsyncLLM 的 output_handler 负责调用
+                    # output_processor.process_outputs 完成。
                     if outputs.outputs or outputs.scheduler_stats:
                         outputs_queue.put_nowait(outputs)
             except Exception as e:
@@ -1114,6 +1140,10 @@ class AsyncMPClient(MPClient):
         if engine is None:
             engine = self.core_engine
 
+        # 【第2课 —— AsyncLLM 转发请求：把请求类型 + 序列化后的请求体打包成消息帧】
+        # 例如 ADD 请求：(EngineCoreRequestType.ADD.value, frame1, frame2, ...)
+        # 随后 _send_input_message 会在头部再追加 engine identity，
+        # 最终 ROUTER 按 identity 精确投递到对应的 Engine DEALER。
         message = (request_type.value, *self.encoder.encode(request))
         return self._send_input_message(message, engine)
 
@@ -1124,6 +1154,9 @@ class AsyncMPClient(MPClient):
         # Any zero-copy tensor/ndarray frames are kept alive by zmq itself
         # until it's finished sending them (there is a ref chain from the underlying
         # memoryview back to the original owning tensor/ndarray).
+        # 【第2课】ROUTER 发送 multipart 消息：第一帧是目标 Engine 的 identity，
+        # 后续是业务帧（request_type + 编码后的 EngineCoreRequest）。
+        # ZeroMQ ROUTER 会用 identity 把消息路由到正确的 DEALER 连接上。
         return self.input_socket.send_multipart((engine,) + message, copy=False)
 
     async def call_utility_async(self, method: str, *args) -> Any:
@@ -1147,6 +1180,10 @@ class AsyncMPClient(MPClient):
         return await self.call_utility_async("get_supported_tasks")
 
     async def add_request_async(self, request: EngineCoreRequest) -> None:
+        # 【第2课 —— AsyncLLM 发送请求入口】
+        # 给请求打上"来自哪个客户端"的标记（支持多前端时 Engine 按 client_index
+        # 决定把结果 PUSH 回哪个 AsyncMPClient 的 PULL 端），
+        # 然后通过 _send_input 以 ROUTER -> DEALER 的路径把 ADD 请求送出去。
         request.client_index = self.client_index
         await self._send_input(EngineCoreRequestType.ADD, request)
         self._ensure_output_queue_task()

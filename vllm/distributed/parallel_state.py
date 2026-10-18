@@ -1823,6 +1823,10 @@ def initialize_model_parallel(
     # otherwise it will cause deadlock.
     # to get group_ranks for each dimension, transpose that dimension to the
     # last dimension, then reshape to 2D, then unbind the last dimension
+    # 【第3课】把一维 rank 列表重塑为 5D 张量 [ExternalDP, DP, PP, PCP, TP]。
+    # 之后每种并行组都按"转置目标维到最后 → reshape 2D → unbind 按行拆"三步取组。
+    # 例：8 卡 TP=2/PP=2/DP=2 → TP组 [g0,g1],[g2,g3]..；PP组 [g0,g2],[g1,g3]..；
+    # DP组 [g0,g4],[g1,g5]..（同一 PP/TP 位置、不同模型副本的 GPU 对齐成组）。
     all_ranks = torch.arange(world_size).reshape(
         -1,
         data_parallel_size,
@@ -1832,6 +1836,8 @@ def initialize_model_parallel(
     )  # noqa
 
     # Build the tensor model-parallel groups.
+    # 【第3课】TP 组：TP 在最内侧维度，直接每 TP_size 个连续 rank 一组；
+    # 组内各 rank 持有同层权重的切片，前向时用 NCCL all-reduce 同步中间结果。
     global _TP
     assert _TP is None, "tensor model parallel group is already initialized"
     group_ranks = all_ranks.view(-1, tensor_model_parallel_size).unbind(0)
@@ -1886,6 +1892,8 @@ def initialize_model_parallel(
     )
 
     # Build the pipeline model-parallel groups.
+    # 【第3课】PP 组：transpose(2,4) 把 PP 维换到最内侧再分组，
+    # 得到 [g0,g2],[g1,g3]...（同一 TP 位置跨 PP stage 的链条，层间传激活值）。
     global _PP
     assert _PP is None, "pipeline model parallel group is already initialized"
     group_ranks = (
@@ -1903,6 +1911,8 @@ def initialize_model_parallel(
         group_ranks, get_world_group().local_rank, backend, group_name="pp"
     )
 
+    # 【第3课】DP 组：transpose(1,4) 把 DP 维换到最内侧，把不同模型副本中
+    # 处于相同 PP/TP 位置的 GPU 对齐成组 [g0,g4],[g1,g5]...（推理时通常不通信）。
     global _DP
     assert _DP is None, "data parallel group is already initialized"
     group_ranks = all_ranks.transpose(1, 4).reshape(-1, data_parallel_size).unbind(0)
@@ -1920,6 +1930,8 @@ def initialize_model_parallel(
             group_ranks, get_world_group().local_rank, backend, group_name="dp"
         )
 
+    # 【第3课】EP 组（MoE 专属）：transpose(1,2) 后按 DP×PCP×TP 大小分组，
+    # 即同一 PP stage 上不同 DP 副本的所有 TP rank 联合承载专家权重。
     global _EP
     assert _EP is None, "expert parallel group is already initialized"
     # Don't create EP group for dense models.

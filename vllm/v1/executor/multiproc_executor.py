@@ -122,6 +122,7 @@ class MultiprocExecutor(Executor):
         self.is_failed = False
         self.failure_callback: FailureCallback | None = None
 
+        # 【第3课】校验 world_size 必须等于 TP * PP * PCP（单 DP 副本内的模型并行进程数）
         tp_size, pp_size, pcp_size = self._get_parallel_sizes()
         assert self.world_size == tp_size * pp_size * pcp_size, (
             f"world_size ({self.world_size}) must be equal to the "
@@ -148,6 +149,9 @@ class MultiprocExecutor(Executor):
         if self.parallel_config.node_rank_within_dp == 0:
             # For leader node within each dp rank,
             # each dp will have its own leader multiproc executor.
+            # 【第3课】关键阈值：默认 16MB（VLLM_MQ_MAX_CHUNK_BYTES_MB）。
+            # 小于阈值的数据走共享内存（零拷贝），大于阈值的数据走 ZMQ XPUB/SUB，
+            # 避免预分配过大的共享内存环形缓冲区。
             max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
             mq_connect_ip = get_ip()
             logger.info(
@@ -161,12 +165,16 @@ class MultiprocExecutor(Executor):
                 self.world_size,
                 self.local_world_size,
             )
+            # 【第3课】创建 Executor → 所有 Worker 的广播队列（一对多）。
+            # 内部持有 ShmRingBuffer（共享内存区）+ ZMQ XPUB socket 两层通道。
             self.rpc_broadcast_mq = MessageQueue(
                 self.world_size,
                 self.local_world_size,
                 max_chunk_bytes=max_chunk_bytes,
                 connect_ip=mq_connect_ip,
             )
+            # 【第3课】把不可跨进程传递的资源（共享内存句柄、socket 地址）打包成可序列化 Handle，
+            # 之后传给每个 Worker 子进程，Worker 用它重建 Reader 端队列。
             scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
         # Create workers
         context = get_mp_context()
@@ -224,6 +232,8 @@ class MultiprocExecutor(Executor):
                 self.start_worker_monitor()
 
             self.response_mqs = []
+            # 【第3课】1 + N 队列结构：1 个 rpc_broadcast_mq（广播下行）+
+            # N 个 worker_response_mq（每个 Worker 独立的结果回传队列，彼此隔离）。
             # Only leader node have remote response mqs
             if self.parallel_config.node_rank_within_dp == 0:
                 for rank in range(self.world_size):
@@ -241,6 +251,8 @@ class MultiprocExecutor(Executor):
             # Ensure message queues are ready. Will deadlock if re-ordered
             # Must be kept consistent with the WorkerProc.
 
+            # 【第3课】队列级握手：收齐所有 Worker 的 ZMQ 订阅通知并回发 READY，
+            # 确认广播/回传两条通道都已连通（区别于上面的进程级 wait_for_ready）。
             # Wait for all input mqs to be ready.
             if self.rpc_broadcast_mq is not None:
                 self.rpc_broadcast_mq.wait_until_ready()
@@ -340,6 +352,10 @@ class MultiprocExecutor(Executor):
     def execute_model(  # type: ignore[override]
         self, scheduler_output: SchedulerOutput, non_block: bool = False
     ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
+        # 【第3课】把本轮 SchedulerOutput 通过 collective_rpc 广播给组内所有 Worker，
+        # 只等 output_rank 这一个 Worker 把最终结果通过 worker_response_mq 回传。
+        # TP 模式下每层内部已通过 NCCL all-reduce 同步，所有 TP rank 的 logits 一致，
+        # 所以 unique_reply_rank 任选一个即可，避免接收 N 份重复结果。
         return self.collective_rpc(
             "execute_model",
             args=(scheduler_output,),
@@ -385,6 +401,9 @@ class MultiprocExecutor(Executor):
     ) -> Any:
         """Returns single result if unique_reply_rank and/or an output
         aggregator is provided, otherwise list."""
+        # 【第3课】类 RPC 调用：Executor 把 (方法名, args, kwargs, output_rank) 序列化后
+        # enqueue 进 rpc_broadcast_mq，组内所有 Worker 在 busy_loop 中 dequeue 拿到相同任务，
+        # 各自执行后只有 output_rank 的 Worker 把结果写回 response_mq。
         assert self.rpc_broadcast_mq is not None, (
             "collective_rpc should not be called on follower node"
         )
@@ -397,6 +416,8 @@ class MultiprocExecutor(Executor):
         aggregators = [a for a in (kv_output_aggregator, ec_output_aggregator) if a]
         aggregate: Callable[[Any], Any]
         if aggregators:
+            # 【第3课】有 aggregator 时需要所有 Worker 的输出（KV/EC 元数据分散在各 rank），
+            # 所以 output_rank 置 None，collective_rpc 会收集所有 response_mq 的返回。
             output_rank = None
 
             def _aggregate(outputs: Any) -> Any:
@@ -410,6 +431,7 @@ class MultiprocExecutor(Executor):
 
             aggregate = _aggregate
         else:
+            # 【第3课】普通 RPC：只接收指定 rank 的返回，省一份带宽和等待。
             output_rank = unique_reply_rank
             aggregate = lambda x: x
 
@@ -417,6 +439,10 @@ class MultiprocExecutor(Executor):
             send_method = method
         else:
             send_method = cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
+        # 【第3课】关键一步：把 RPC 四元组广播给所有 Worker。
+        # MessageQueue.enqueue 内部根据 payload 大小自动选择传输路径：
+        #   < max_chunk_bytes → 共享内存环形缓冲区（零拷贝）
+        #   ≥ max_chunk_bytes → ZMQ XPUB socket（首字节写 1 作为 overflow 标记）
         self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
 
         response_mqs: Sequence[MessageQueue] = self.response_mqs
@@ -539,6 +565,9 @@ class MultiprocExecutor(Executor):
         return
 
     def _get_output_rank(self) -> int:
+        # 【第3课】output_rank = 最后一个 PP stage 的第一个 TP rank（world_size - tp_size），
+        # 对应课程中的 unique_reply_rank：TP 各 rank 经 NCCL all-reduce 后 logits 一致，
+        # 只让这一个 rank 回传结果，Executor 就不用收 N 份重复数据。
         # Only returns ModelRunnerOutput from TP rank=0 and PP rank=-1
         # (the first TP worker of the last PP stage).
         # Example:
@@ -562,6 +591,8 @@ class MultiprocExecutor(Executor):
 @dataclass
 class UnreadyWorkerProcHandle:
     """WorkerProcess handle before READY."""
+    # 【第3课】Worker 子进程"未就绪"期间的句柄：持有子进程对象和 ready_pipe，
+    # 子进程完成初始化后通过 ready_pipe 发回 READY + worker_response_mq 的 handle。
 
     proc: BaseProcess
     rank: int
@@ -598,7 +629,13 @@ class WorkerProcHandle:
 
 
 class WorkerProc:
-    """Wrapper that runs one Worker in a separate process."""
+    """Wrapper that runs one Worker in a separate process.
+
+    【第3课】通信角色：
+    - rpc_broadcast_mq：Reader 端，从 Executor 广播队列取出 RPC 请求（一对多）。
+    - worker_response_mq：Writer 端，把本 Worker 的执行结果回传给 Executor（一对一）。
+        注意该队列是 Worker 本地新建，Executor 通过 create_from_handle 反向接入。
+    """
 
     READY_STR = "READY"
     rpc_broadcast_mq: MessageQueue | None
@@ -608,11 +645,15 @@ class WorkerProc:
         self, input_shm_handle: Handle, vllm_config: VllmConfig
     ) -> None:
         if vllm_config.parallel_config.nnodes_within_dp == 1:
+            # 【第3课】单节点：用 Executor 传过来的 handle 重建广播队列的 Reader 端。
+            # 内部会重建 ShmRingBuffer（共享内存）+ 创建 ZMQ SUB socket 连接到 Executor 的 XPUB。
             # Initialize MessageQueue for receiving SchedulerOutput
             self.rpc_broadcast_mq = MessageQueue.create_from_handle(
                 input_shm_handle, self.worker.rank
             )
 
+            # 【第3课】Worker 本地新建一个 1-reader / 1-writer 的 MessageQueue，
+            # 用于把执行结果回传给 Executor（Executor 之后会通过 export_handle 反向接入）。
             # Initializes a message queue for sending the model output
             self.worker_response_mq = MessageQueue(1, 1)
             self.peer_response_handles = []
@@ -712,6 +753,8 @@ class WorkerProc:
         is_driver_worker: bool,
         inherited_fds: list[int] | None = None,
     ) -> UnreadyWorkerProcHandle:
+        # 【第3课】在 Executor 进程中调用，spawn 一个新的 Python 子进程，
+        # 子进程入口是 WorkerProc.worker_main，每个子进程对应一张 GPU。
         context = get_mp_context()
         # Ready pipe to communicate readiness from child to parent
         ready_reader, ready_writer = context.Pipe(duplex=False)
@@ -779,6 +822,10 @@ class WorkerProc:
     def wait_for_ready(
         unready_proc_handles: list[UnreadyWorkerProcHandle],
     ) -> list[WorkerProcHandle]:
+        # 【第3课】进程级握手：在 Executor 端阻塞等待每个 Worker 子进程完成自身初始化。
+        # Worker 完成 init_device + load_model + message queue 创建后，
+        # 通过 ready_pipe 把 {"status": "READY", "handle": ...} 发回 Executor。
+        # Executor 在这里拿到每个 Worker 的 worker_response_mq handle，用于后续结果回收。
         e = Exception(
             "WorkerProc initialization failed due to an exception in a "
             "background process. See stack trace for root cause."
@@ -853,6 +900,12 @@ class WorkerProc:
     def worker_main(*args, **kwargs):
         """Worker initialization and execution loops.
         This runs a background process"""
+        # 【第3课】Worker 子进程的入口函数。完整生命周期：
+        # 1. 注册信号处理（SIGTERM/SIGINT 触发 graceful shutdown）
+        # 2. 构造 WorkerProc（含 init_device + load_model + 创建 message queue）
+        # 3. 通过 ready_pipe 向 Executor 发送 READY + worker_response_mq 的 handle
+        # 4. 调用 wait_until_ready 完成 broadcast_mq / response_mq 的双向 ZMQ 握手
+        # 5. 进入 worker_busy_loop，阻塞等待 Executor 下发 RPC 任务
 
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
@@ -1028,6 +1081,8 @@ class WorkerProc:
 
     def worker_busy_loop(self):
         """Main busy loop for Multiprocessing Workers"""
+        # 【第3课】Worker 进程的"事件循环"：无限阻塞地从广播队列 dequeue 一条 RPC 请求，
+        # 然后调用 Worker 对应方法。dequeue 内部会根据首字节判断走 SHM 还是 ZMQ 接收。
         assert self.rpc_broadcast_mq is not None
         while True:
             self._execute_worker_rpc(self.rpc_broadcast_mq.dequeue(indefinite=True))
@@ -1038,6 +1093,10 @@ class WorkerProc:
     ) -> None:
         """Execute one RPC in a separate frame from the dequeue loop."""
         method, args, kwargs, output_rank = rpc_request
+        # 【第3课】注意：所有 Worker 都会执行同一次调用（因为是广播），
+        # 但只有 rank == output_rank 的 Worker 会把结果 enqueue 到 response_mq 回传给 Executor。
+        # 这避免了 N 个 Worker 都回传重复结果。TP 模式下各 TP rank 通过 NCCL 内部同步，
+        # 实际产生的 logits 完全一致，所以挑一个就够。
         try:
             if isinstance(method, str):
                 func = getattr(self.worker, method)

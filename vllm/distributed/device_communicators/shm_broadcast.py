@@ -462,6 +462,15 @@ class Handle:
 
 
 class MessageQueue:
+    # 【第3课】进程间广播队列：Executor 与 Worker 之间的通信通道。
+    # 双通道混合传输策略：
+    #   1. ShmRingBuffer（共享内存环形缓冲区）：传输小数据，零拷贝。
+    #      每个 Reader 各自维护读游标，多个 Reader 互不干扰。
+    #   2. ZMQ XPUB/SUB：传输大数据（payload ≥ max_chunk_bytes）或跨节点数据。
+    #      Writer 把数据发到 XPUB，所有 SUB 订阅者接收。
+    # 区分 Reader 是否与 Writer 同节点：
+    #   - local_reader：能访问共享内存，小数据走 SHM；大数据通过 XPUB IPC 推送。
+    #   - remote_reader：跨节点，没有共享内存通道，所有数据走 TCP PUB/SUB。
     def __init__(
         self,
         n_reader,  # number of all readers
@@ -492,10 +501,13 @@ class MessageQueue:
             # XPUB is very similar to PUB,
             # except that it can receive subscription messages
             # to confirm the number of subscribers
+            # 【第3课】Writer 端持有 XPUB：既能发布数据，也能收到 Reader 的订阅通知。
             self.local_socket = context.socket(XPUB)
             # set the verbose option so that we can receive every subscription
             # message. otherwise, we will only receive the first subscription
             # see http://api.zeromq.org/3-3:zmq-setsockopt for more details
+            # 【第3课】XPUB_VERBOSE=True：每个 Reader 订阅时都通知一次，
+            # wait_until_ready() 靠逐条计数确认所有 Worker 已上线。
             self.local_socket.setsockopt(XPUB_VERBOSE, True)
             local_subscribe_addr = get_open_zmq_ipc_path()
             logger.debug("Binding to %s", local_subscribe_addr)
@@ -554,10 +566,16 @@ class MessageQueue:
         logger.debug("vLLM message queue communication handle: %s", self.handle)
 
     def export_handle(self) -> Handle:
+        # 【第3课】把队列的连接元数据（共享内存标识 + XPUB 的 IPC/TCP 地址 +
+        # 本地 reader rank 列表）导出为可序列化 Handle，随 make_worker_process
+        # 传给 Worker 子进程，供其用 create_from_handle 重建 Reader 端。
         return self.handle
 
     @staticmethod
     def create_from_handle(handle: Handle, rank) -> "MessageQueue":
+        # 【第3课】Reader 端（Worker 收任务 / Executor 收结果）用 Handle 重建队列：
+        # - 本地 rank：重建 ShmRingBuffer + 创建 ZMQ SUB 订阅所有消息，连到 Writer 的 XPUB；
+        # - 远端 rank：跨节点无共享内存，只用 TCP SUB 接收。
         self = MessageQueue.__new__(MessageQueue)
         self.handle = handle
         self._is_writer = False
@@ -608,6 +626,9 @@ class MessageQueue:
         """This is a collective operation. All processes (including the
         readers and the writer) should call this function.
         """
+        # 【第3课】队列级双向握手（所有进程都要调用，类似 TCP 三次握手）：
+        # - Writer：逐条收齐 Reader 的订阅通知 → 广播 b"READY" 确认发布通道可用；
+        # - Reader：订阅后阻塞等 b"READY"，收到即代表通道建立完成。
         if self._is_writer:
             # wait for all readers to connect
 
@@ -822,6 +843,13 @@ class MessageQueue:
 
     def enqueue(self, obj, timeout: float | None = None):
         """Write to message queue with optional timeout (in seconds)"""
+        # 【第3课】Writer 端入队。核心逻辑：
+        # 1. pickle 序列化对象，把大于 1MB 的 buffer 拆到 out-of-band 列表（避免 pickle 流过大）
+        # 2. 判断总字节数 vs max_chunk_bytes：
+        #    - 小数据：写入共享内存，首字节 = 0 标记"未溢出"
+        #    - 大数据：共享内存首字节 = 1 标记"已溢出"，实际数据通过 ZMQ XPUB send_multipart 发送
+        # 3. notify 唤醒阻塞在 spin_condition 上的本地 Reader
+        # 4. 跨节点 Reader 通过 remote_socket (TCP XPUB) 推送
         assert self._is_writer, "Only writers can enqueue"
         all_buffers: list[SizedBuffer] = [b""]
         total_bytes = 6  # 2 bytes for oob buffer count, 4 for main buffer size
@@ -855,10 +883,14 @@ class MessageQueue:
             all_buffers[0] = bio.getvalue()
         if self.n_local_reader > 0:
             if total_bytes + len(all_buffers[0]) >= self.buffer.max_chunk_bytes:
+                # 【第3课】数据过大 → 溢出路径：共享内存只写一个溢出标记位 1，
+                # 真实数据通过 ZMQ XPUB socket 推送，避免预分配过大的环形缓冲区。
                 with self.acquire_write(timeout) as buf:
                     buf[0] = 1  # overflow
                 self.local_socket.send_multipart(all_buffers, copy=False)
             else:
+                # 【第3课】小数据 → 共享内存路径：零拷贝。
+                # 缓冲区格式：
                 # Byte 0: 0
                 # Bytes 1-2: Count of buffers
                 # Then each buffer follows, preceded by 4 bytes containing its length:
@@ -877,6 +909,7 @@ class MessageQueue:
             self._spin_condition.notify()
 
         if self.n_remote_reader > 0:
+            # 【第3课】远端 Reader 始终通过 ZMQ TCP 接收（跨节点无共享内存）
             self.remote_socket.send_multipart(all_buffers, copy=False)
 
     def dequeue(
@@ -885,6 +918,11 @@ class MessageQueue:
         indefinite: bool = False,
     ):
         """Read from message queue with optional timeout (in seconds)"""
+        # 【第3课】Reader 端出队，与 enqueue 严格对应：
+        # 本地 Reader：先读共享内存首字节
+        #   - buf[0] == 0：数据在 SHM，直接按 [2字节 count][4字节 len][buffer]... 格式解析
+        #   - buf[0] == 1：数据溢出到 ZMQ，从 SUB socket recv_multipart 接收
+        # 远端 Reader：跨节点，直接从 remote_socket (TCP SUB) recv
         if self._is_local_reader:
             with self.acquire_read(timeout, indefinite) as buf:
                 overflow = buf[0] == 1

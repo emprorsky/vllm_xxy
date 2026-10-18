@@ -411,6 +411,11 @@ class AsyncLLM(EngineClient):
         self._run_output_handler()
 
         # Create a new output collector for the request.
+        # 【第2课 —— 为每个请求创建专属的输出队列（RequestOutputCollector）】
+        # 这个 queue 不会被发送到 EngineCore，而是保留在前端 AsyncLLM 进程内：
+        # Engine 返回的输出会先经过 OutputProcessor 按 request_id 拆分，
+        # 再把增量 token/阶段输出 push 进这条专属队列；
+        # generate() 协程则在另一端持续消费，形成"一条请求一个私有流"的流式输出。
         queue = RequestOutputCollector(params.output_kind, request.request_id)
 
         # Use cloned params that may have been updated in process_inputs()
@@ -443,10 +448,16 @@ class AsyncLLM(EngineClient):
         index: int,
         queue: RequestOutputCollector,
     ):
-        # Add the request to OutputProcessor (this process).
+        # 【第2课 —— AsyncLLM 注册 + 转发请求的双轨动作】
+        # ① 先把请求注册到前端本地的 OutputProcessor 中，
+        #    并与该请求专属的 queue（RequestOutputCollector）绑定，
+        #    这样后续收到 Engine 回推的输出时，就能按 request_id
+        #    找到对应 RequestState，并把增量 token 投进专属 queue。
         self.output_processor.add_request(request, prompt, parent_req, index, queue)
 
         # Add the EngineCoreRequest to EngineCore (separate process).
+        # ② 把 EngineCoreRequest 通过 ZMQ ROUTER -> DEALER 的链路，
+        #    发送到后台独立进程中的 EngineCore 执行实际推理。
         await self.engine_core.add_request_async(request)
 
         if self.log_requests:
@@ -597,6 +608,10 @@ class AsyncLLM(EngineClient):
 
         q: RequestOutputCollector | None = None
         try:
+            # 【第2课 —— 流式返回第 1 步：提交请求，同时拿到该请求的专属输出队列 q】
+            # add_request 内部会创建 RequestOutputCollector，并把它注册在
+            # OutputProcessor 的 request_states 里，后续 output_handler 就会
+            # 把该请求的增量输出持续推入这个队列 q。
             q = await self.add_request(
                 request_id,
                 prompt,
@@ -618,6 +633,11 @@ class AsyncLLM(EngineClient):
             while not finished:
                 # Note: drain queue without await if possible (avoids
                 # task switching under load which helps performance).
+                # 【第2课 —— 流式返回第 2/3 步：等待就绪 + 即时产出】
+                # 后台 output_handler 把解码后的 RequestOutput 推入 q 时，
+                # 这里就立刻拿到，不等到整段生成结束；每拿到一个分块就
+                # yield 给上层（通常是 OpenAI API server 的 SSE 响应），
+                # 从而实现"生成一个 token 返回一个 token"的流式效果。
                 out = q.get_nowait() or await q.get()
 
                 # Note: both OutputProcessor and EngineCore handle their
@@ -700,6 +720,10 @@ class AsyncLLM(EngineClient):
         async def output_handler():
             try:
                 while True:
+                    # 【第2课 —— AsyncLLM 后台 output_handler：结果分发总循环】
+                    # ① 从 engine_core 拉取最新一批 EngineCoreOutputs。
+                    # get_output_async() 内部是从 AsyncMPClient 的公共 outputs_queue
+                    # 取出一项（该队列由 process_outputs_socket 协程持续写入）。
                     # 1) Pull EngineCoreOutputs from the EngineCore.
                     outputs = await engine_core.get_output_async()
                     num_outputs = len(outputs.outputs)
@@ -716,6 +740,11 @@ class AsyncLLM(EngineClient):
                         end = start + chunk_size
                         outputs_slice = engine_core_outputs[start:end]
                         # 2) Process EngineCoreOutputs.
+                        # 【第2课】② 交由 OutputProcessor.process_outputs 做前端处理：
+                        #    - 按 request_id 从 request_states 字典定位到该请求状态
+                        #    - 对新 token 做 detokenize（解码成文本）、stop 条件判断
+                        #    - 组装成 RequestOutput，并放入该请求绑定的专属 queue
+                        #    这样 generate() 端对应的 await q.get() 就能立即拿到。
                         processed_outputs = output_processor.process_outputs(
                             outputs_slice, outputs.timestamp, iteration_stats
                         )

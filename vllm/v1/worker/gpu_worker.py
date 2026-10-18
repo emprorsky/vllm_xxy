@@ -141,6 +141,10 @@ class AsyncIntermediateTensors(IntermediateTensors):
 
 
 class Worker(WorkerBase):
+    # 【第3课】GPU Worker：实际持有模型权重 + KV cache + 一张 GPU 的计算单元。
+    # 由 WorkerProc 在子进程中创建，接住 Executor 广播过来的 execute_model 等调用。
+    # 三阶段初始化：init_device() → load_model() → initialize_from_config()，
+    # 三者对应文档中"Init Device / Load Model / Initialize KV Cache"流程。
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -316,6 +320,12 @@ class Worker(WorkerBase):
 
     @instrument(span_name="Init device")
     def init_device(self):
+        # 【第3课】Worker 三阶段初始化之【1. Init Device】：
+        # - 根据 local_rank 绑定对应 GPU
+        # - 初始化 NCCL 分布式环境（TP/PP/PCP/EP 子通信组）
+        # - 设置随机种子
+        # - 拍一份 GPU 内存快照（init_snapshot），后续用它估算可分配给 KV cache 的显存
+        # - 实例化 ModelRunner（在父类 WorkerBase 中）
         if self.device_config.device_type == "cuda":
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
@@ -456,6 +466,9 @@ class Worker(WorkerBase):
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
     def load_model(self, *, load_dummy_weights: bool = False) -> None:
+        # 【第3课】Worker 三阶段初始化之【2. Load Model】：
+        # 实例化模型结构 + 按 TP/PP 策略加载权重分片到本 GPU + model.eval() 切到推理模式。
+        # 实际工作委托给 GPUModelRunner.load_model 完成（参数切分、设备放置）。
         with (
             self._maybe_get_memory_pool_context(tag="weights"),
             set_current_vllm_config(self.vllm_config),
@@ -672,6 +685,14 @@ class Worker(WorkerBase):
     @instrument(span_name="Allocate KV cache")
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
         """Allocate GPU KV cache with the specified kv_cache_config."""
+        # 【第3课】Worker 三阶段初始化之【3. Initialize KV Cache】：
+        # 由 EngineCore 在 Executor 创建完后通过 collective_rpc 调用各 Worker。
+        # 主要工作：
+        #   - get_kv_cache_spec 拿到每层注意力 backend 的 KV 规格
+        #   - 用 dummy run + 内存 profiling 估算可用显存
+        #   - 计算可容纳的 KV block 数量、分配并 reshape KV cache tensor、绑定到注意力层
+        #   - 准备 attention metadata 元数据（FlashAttention 等）
+        # 后续 compile_or_warm_up_model 会做 warmup batch + CUDA Graph 捕获以降低 launch 开销。
 
         # Update local config with adjusted num blocks after profiling,
         # so that it's available to the warmup stage.

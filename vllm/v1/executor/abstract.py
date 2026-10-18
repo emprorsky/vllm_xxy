@@ -40,6 +40,11 @@ class Executor(ABC):
 
     An executor is responsible for executing the model on one device,
     or it can be a distributed executor that can execute the model on multiple devices.
+
+    【第3课】架构定位（vLLM 三层分工）：
+    - Engine（EngineCoreProc）：接收请求 + 调度，不直接做模型计算
+    - Executor（本类）：执行管理，把任务 broadcast 给一组 Worker 进程
+    - Worker：实际持有模型权重 / KV cache / GPU 的计算单元
     """
 
     uses_ray: bool = False  # whether the executor uses Ray for orchestration.
@@ -47,11 +52,15 @@ class Executor(ABC):
 
     @staticmethod
     def get_class(vllm_config: VllmConfig) -> type["Executor"]:
+        # 【第3课】在引擎启动阶段（AsyncLLM.from_vllm_config）调用一次，
+        # 根据 distributed_executor_backend 选择具体 Executor 子类。
+        # 返回的是"类"而非实例，真正实例化发生在后台 EngineCore 进程里。
         executor_class: type[Executor]
         parallel_config = vllm_config.parallel_config
         distributed_executor_backend = parallel_config.distributed_executor_backend
         # distributed_executor_backend must be set in VllmConfig.__post_init__
         if isinstance(distributed_executor_backend, type):
+            # 【第3课】用户直接传入了 Executor 子类，跳过字符串解析
             if not issubclass(distributed_executor_backend, Executor):
                 raise TypeError(
                     "distributed_executor_backend must be a subclass of "
@@ -59,6 +68,7 @@ class Executor(ABC):
                 )
             executor_class = distributed_executor_backend
         elif distributed_executor_backend == "ray":
+            # 【第3课】跨机分布式：用 Ray 拉起多机 EngineCore 进程
             if envs.VLLM_USE_RAY_V2_EXECUTOR_BACKEND:
                 from vllm.v1.executor.ray_executor_v2 import RayExecutorV2
 
@@ -68,18 +78,23 @@ class Executor(ABC):
 
                 executor_class = RayDistributedExecutor
         elif distributed_executor_backend == "mp":
+            # 【第3课】单机多 GPU：用 Python multiprocessing 拉起本地 Worker 子进程，
+            # 避免 Ray 的开销，每个子进程绑定一张 GPU
             from vllm.v1.executor.multiproc_executor import MultiprocExecutor
 
             executor_class = MultiprocExecutor
         elif distributed_executor_backend == "uni":
+            # 【第3课】单 GPU / 简单测试：Executor 与 Worker 同进程
             from vllm.v1.executor.uniproc_executor import UniProcExecutor
 
             executor_class = UniProcExecutor
         elif distributed_executor_backend == "external_launcher":
+            # 【第3课】外部启动器（torchrun / slurm）一次性拉起所有 DP 副本的全局 rank
             # TODO: make v1 scheduling deterministic
             # to support external launcher
             executor_class = ExecutorWithExternalLauncher
         elif isinstance(distributed_executor_backend, str):
+            # 【第3课】通过全限定类名自定义 Executor
             executor_class = resolve_obj_by_qualname(distributed_executor_backend)
             if not issubclass(executor_class, Executor):
                 raise TypeError(

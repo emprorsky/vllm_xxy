@@ -548,6 +548,11 @@ class OutputProcessor:
         request_index: int = 0,
         queue: RequestOutputCollector | None = None,
     ) -> None:
+        # 【第2课 —— OutputProcessor 注册请求状态 + 绑定专属输出队列】
+        # 每个 request_id 在 OutputProcessor 里对应一份 RequestState，
+        # 里面保存了该请求的专属 queue（RequestOutputCollector）、detokenizer、
+        # 到达时间等上下文。后续 Engine 回推的输出，就靠 request_id
+        # 在 request_states 字典里查表，把增量 token 准确塞进这条私有队列。
         request_id = request.request_id
         req_state = self.request_states.get(request_id)
         if req_state is not None:
@@ -635,6 +640,15 @@ class OutputProcessor:
         request_outputs: list[RequestOutput | PoolingRequestOutput] = []
         reqs_to_abort: list[str] = []
         for engine_core_output in engine_core_outputs:
+            # 【第2课 —— process_outputs 核心：按 request_id 分发 + 解码 + 入队】
+            # 本函数是前端 OutputProcessor 处理 Engine 批量输出的唯一大循环，
+            # 对应课程"结果放入队列"节的四步流程：
+            #   1) 根据 request_id 从 self.request_states 里找到请求状态 req_state；
+            #   2) 使用 detokenizer 把 new_token_ids 解码成文本，
+            #      并检查是否命中 stop 字符串/stop token；
+            #   3) 组装 RequestOutput（含 finished、stop_reason 等）；
+            #   4) 如果有绑定的 queue（AsyncLLM 流式场景），就 req_state.queue.put(...)
+            #      推入该请求的专属队列，供 generate() 端消费。
             req_id = engine_core_output.request_id
             req_state = self.request_states.get(req_id)
             if req_state is None:
@@ -703,6 +717,9 @@ class OutputProcessor:
 
                 if req_state.queue is not None:
                     # AsyncLLM: put into queue for handling by generate().
+                    # 【第2课】把该请求本轮产生的增量 RequestOutput 推入专属队列。
+                    # generate() 端的 `q.get_nowait() or await q.get()` 一旦被唤醒，
+                    # 就会立即把这一块输出 yield 给上层，完成流式返回的最后一步。
                     req_state.queue.put(request_output)
                 else:
                     # LLMEngine: return list of RequestOutputs.

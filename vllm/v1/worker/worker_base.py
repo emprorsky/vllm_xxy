@@ -215,6 +215,9 @@ class WorkerWrapperBase:
     We first instantiate the WorkerWrapper, which remembers the worker module
     and class name. Then, when we call `update_environment_variables`, and the
     real initialization happens in `init_worker`.
+    【第3课】Worker 初始化调用链：WorkerWrapperBase.__init__() → init_worker()
+    （加载插件 + 解析 worker_cls + 动态混入 extension）→ init_device()（绑 GPU +
+    NCCL 通信组 + 创建 ModelRunner）→ load_model() → initialize_from_config()（KV cache）。
     """
 
     def __init__(
@@ -300,6 +303,8 @@ class WorkerWrapperBase:
                     if callable(getattr(worker_extension_cls, attr)):
                         extended_calls.append(attr)
                 # dynamically inherit the worker extension class
+                # 【第3课】动态继承：把 worker_extension_cls 混入 Worker 基类，
+                # 让自定义扩展方法也能被 Executor 的 collective_rpc 按方法名调用。
                 worker_class.__bases__ = worker_class.__bases__ + (
                     worker_extension_cls,
                 )

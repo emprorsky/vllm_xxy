@@ -579,6 +579,8 @@ class ParallelConfig:
     @property
     def world_size_across_dp(self) -> int:
         """Process world size across TP, PCP, PP, and DP."""
+        # 【第3课】跨 DP 的全局总进程数 = world_size(TP×PP×PCP) × DP。
+        # 多节点多副本场景（Ray/Slurm 拉起多个 DP 副本）用它表示集群总 Worker 数。
         return self.world_size * self.data_parallel_size
 
     @property
@@ -862,6 +864,8 @@ class ParallelConfig:
 
     def __post_init__(self) -> None:
         # Continue with the rest of the initialization
+        # 【第3课】world_size = PP × TP × PCP：单个 DP 副本（一个模型副本）内的
+        # Worker 进程数，MultiprocExecutor 按此数量创建 Worker 子进程。
         self.world_size = (
             self.pipeline_parallel_size
             * self.tensor_parallel_size
@@ -870,6 +874,8 @@ class ParallelConfig:
 
         if self.distributed_executor_backend == "external_launcher":
             logger.info("Using external launcher for distributed inference.")
+            # 【第3课】external_launcher（torchrun/slurm）拉起的是含所有 DP 副本的
+            # 全局 rank，所以 world_size 还要再乘以 data_parallel_size。
             self.world_size *= self.data_parallel_size
 
         if self.enable_elastic_ep:
