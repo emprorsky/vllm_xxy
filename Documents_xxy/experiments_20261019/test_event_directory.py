@@ -183,3 +183,18 @@ def test_replay_intermediate_stores_cannot_become_visible_to_routing():
         assert not subscriber.directory.blocks
 
     asyncio.run(exercise())
+
+
+def test_completion_before_delayed_event_is_usable_but_removal_revokes_proof():
+    directory = EventDirectory(128)
+    tokens = [42] * 16
+    keys = prefix_keys(tokens)
+    directory.observe(keys, 0)
+    assert directory.match(keys, 0) == 0
+    directory.ingest(0, [stored([1], tokens)], 1, b"a")
+    assert directory.match(keys, 1) == 16
+    directory.ingest(1, [{"type": "BlockRemoved", "block_hashes": [1]}], 2, b"b")
+    directory.ingest(2, [stored([1], tokens)], 3, b"new_pending_copy")
+    assert directory.match(keys, 3) == 0
+    directory.observe(keys, 4)
+    assert directory.match(keys, 4) == 16

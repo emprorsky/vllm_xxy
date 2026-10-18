@@ -74,7 +74,14 @@ class EventSubscriber:
                 self.apply(frames, target=snapshot)
             # Publish a complete replay atomically; historical intermediate
             # stores must never be visible before their later removals.
-            for name in ["blocks", "ready", "identities", "sequence", "seen"]:
+            for name in [
+                "blocks",
+                "ready",
+                "completed",
+                "identities",
+                "sequence",
+                "seen",
+            ]:
                 setattr(self.directory, name, getattr(snapshot, name))
             for name in ["gaps", "epochs", "unknown_parents", "rejected"]:
                 setattr(

@@ -21,6 +21,7 @@ class EventDirectory(PrefixDirectory):
     def __init__(self, capacity_tokens, block_size=16, ttl_s=60):
         super().__init__(capacity_tokens, block_size, ttl_s)
         self.ready = set()
+        self.completed = OrderedDict()
         self.identities = OrderedDict()
         self.sequence = None
         self.seen = OrderedDict()
@@ -32,6 +33,7 @@ class EventDirectory(PrefixDirectory):
     def clear(self):
         super().clear()
         self.ready.clear()
+        self.completed.clear()
         self.identities.clear()
 
     def match(self, keys, now):
@@ -45,16 +47,24 @@ class EventDirectory(PrefixDirectory):
 
     def _expire(self, now):
         super()._expire(now)
+        while self.completed and next(iter(self.completed.values())) < now - self.ttl_s:
+            self.completed.popitem(last=False)
         self.ready.intersection_update(self.blocks)
+        self.ready.intersection_update(self.completed)
 
     def observe(self, keys, now):
         # A successful request can refresh frequency, never invent residency.
         self._expire(now)
         for key in keys:
+            self.completed[key] = now
+            self.completed.move_to_end(key)
             if key in self.blocks:
                 previous = self.blocks.pop(key)
                 self.blocks[key] = CachedBlock(now, previous.references + 1)
                 self.ready.add(key)
+        while len(self.completed) > self.capacity_blocks * 8:
+            key, _ = self.completed.popitem(last=False)
+            self.ready.discard(key)
 
     def ingest(self, sequence, events, now, payload_digest):
         if self.sequence is not None and sequence <= self.sequence:
@@ -88,6 +98,7 @@ class EventDirectory(PrefixDirectory):
                     key = self.identities.get(native_key(block))
                     self.blocks.pop(key, None)
                     self.ready.discard(key)
+                    self.completed.pop(key, None)
                 continue
             if kind != "BlockStored":
                 continue
@@ -124,6 +135,9 @@ class EventDirectory(PrefixDirectory):
                 self.identities.move_to_end(native)
                 old = self.blocks.pop(key, None)
                 self.blocks[key] = CachedBlock(now, old.references if old else 1)
+                completed_at = self.completed.get(key)
+                if completed_at is not None and 0 <= now - completed_at <= self.ttl_s:
+                    self.ready.add(key)
             # Missing native-parent identities only produce false negatives.
             while len(self.identities) > self.capacity_blocks * 8:
                 self.identities.popitem(last=False)
