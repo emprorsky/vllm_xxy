@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="790" viewBox="0 0 1200 790" role="img" aria-labelledby="title desc">
+<title id="title">文件层：扩容、保存与恢复</title><desc id="desc">本机文件组：GPU KV经CPU暂存进入1GiB文件层，恢复时反向搬运。CPU暂存中的重复副本不能与文件容量简单相加；完整读取和边界一致性需要检查。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="790" fill="white"/>
+<text x="35" y="48" font-size="28" style="fill:#172554" font-weight="bold" text-anchor="start">问题：CPU缓存容量有限，更多会话回来时仍找不到旧KV</text>
+<rect x="30" y="78" width="1140" height="109" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="53" y="118" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="start">只换更大的保存位置还不够：更多KV也意味着更多写入、读取和淘汰。</text>
+<text x="53" y="158" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">因此同时做两件事：增加文件层容量 + 在压力下筛选大写入。</text>
+<text x="35" y="235" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">数据怎样走：保存从左往右，恢复从右往左</text>
+<rect x="35" y="275" width="290" height="235" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="180" y="325" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU工作区</text>
+<text x="180" y="382" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">模型计算产生KV</text>
+<text x="180" y="427" font-size="20" style="fill:#475569" font-weight="normal" text-anchor="middle">恢复后继续推理</text>
+<rect x="455" y="275" width="290" height="235" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="600" y="325" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="middle">CPU暂存</text>
+<text x="600" y="382" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">0.25GiB，协助搬运</text>
+<text x="600" y="427" font-size="20" style="fill:#475569" font-weight="normal" text-anchor="middle">可能含文件数据的临时副本</text>
+<rect x="875" y="275" width="290" height="235" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1020" y="325" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="middle">文件层</text>
+<text x="1020" y="382" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">1GiB目标缓存</text>
+<text x="1020" y="427" font-size="20" style="fill:#475569" font-weight="normal" text-anchor="middle">准入观察此层容量与淘汰</text>
+<line x1="335" y1="347" x2="445" y2="347" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="390.0" y="328" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">保存</text>
+<line x1="445" y1="440" x2="335" y2="440" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="390.0" y="475" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">恢复</text>
+<line x1="755" y1="347" x2="865" y2="347" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="810.0" y="328" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">保存</text>
+<line x1="865" y1="440" x2="755" y2="440" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="810.0" y="475" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">恢复</text>
+<rect x="30" y="550" width="555" height="145" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="52" y="589" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">容量不要重复计数</text>
+<text x="52" y="630" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">同一份KV在CPU和文件都有副本，</text>
+<text x="52" y="664" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">不能直接当成两份独立内容容量。</text>
+<rect x="615" y="550" width="555" height="145" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="637" y="589" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">读回来必须完整且位置正确</text>
+<text x="637" y="630" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">缺文件、短读和加载数量不一致，</text>
+<text x="637" y="664" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">都不能伪报为恢复成功。</text>
+<text x="35" y="750" font-size="22" style="fill:#475569" font-weight="normal" text-anchor="start">文件读取可能命中OS页缓存；这里验证文件后端链路，不是测裸SSD带宽。</text>
+</svg>

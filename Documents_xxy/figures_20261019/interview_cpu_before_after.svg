@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+<title id="title">CPU KV保存：为什么少写反而可能更快</title><desc id="desc">教学例子：CPU容量8块且已持续发生容量淘汰。默认接收冷请求C的8块会覆盖A与B；条件化策略跳过C的可选保存，A回来可复用旧KV。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="720" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：刚保存的旧会话KV，还没等到复用就被挤掉</text>
+<text x="35" y="84" font-size="22" style="fill:#475569" font-weight="normal" text-anchor="start">教学例子：CPU只能装8块，已满且近期持续淘汰；A、B各有4块旧KV</text>
+<rect x="30" y="112" width="555" height="435" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<rect x="45" y="128" width="525" height="46" rx="9" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="60" y="159" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">原来：大写入也照常接收</text>
+<text x="52" y="210" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">① 开始时：CPU里有A、B的旧KV</text>
+<rect x="52" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="79" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A1</text>
+<rect x="113" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="140" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A2</text>
+<rect x="174" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="201" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A3</text>
+<rect x="235" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="262" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A4</text>
+<rect x="296" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="323" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B1</text>
+<rect x="357" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="384" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B2</text>
+<rect x="418" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="445" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B3</text>
+<rect x="479" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="506" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B4</text>
+<text x="52" y="326" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">② 新来的C，需要从零保存8块</text>
+<text x="52" y="363" font-size="22" style="fill:#b91c1c" font-weight="normal" text-anchor="start">接收C：腾出空间，挤掉旧A、B</text>
+<rect x="52" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="79" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C1</text>
+<rect x="113" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="140" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C2</text>
+<rect x="174" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="201" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C3</text>
+<rect x="235" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="262" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C4</text>
+<rect x="296" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="323" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C5</text>
+<rect x="357" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="384" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C6</text>
+<rect x="418" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="445" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C7</text>
+<rect x="479" y="388" width="54" height="48" rx="7" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="506" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">C8</text>
+<text x="52" y="496" font-size="23" style="fill:#b91c1c" font-weight="bold" text-anchor="start">③ A回来：没命中，需要重新计算</text>
+<rect x="615" y="112" width="555" height="435" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<rect x="630" y="128" width="525" height="46" rx="9" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="645" y="159" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">改造：压力下跳过大写入</text>
+<text x="637" y="210" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">① 开始时：CPU里有A、B的旧KV</text>
+<rect x="637" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="664" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A1</text>
+<rect x="698" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="725" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A2</text>
+<rect x="759" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="786" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A3</text>
+<rect x="820" y="230" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="847" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A4</text>
+<rect x="881" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="908" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B1</text>
+<rect x="942" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="969" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B2</text>
+<rect x="1003" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="1030" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B3</text>
+<rect x="1064" y="230" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="1091" y="261" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B4</text>
+<text x="637" y="326" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="start">② 新来的C，需要从零保存8块</text>
+<text x="637" y="363" font-size="22" style="fill:#166534" font-weight="normal" text-anchor="start">跳过C的保存：旧A、B继续留着</text>
+<rect x="637" y="388" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="664" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A1</text>
+<rect x="698" y="388" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="725" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A2</text>
+<rect x="759" y="388" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="786" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A3</text>
+<rect x="820" y="388" width="54" height="48" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="847" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">A4</text>
+<rect x="881" y="388" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="908" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B1</text>
+<rect x="942" y="388" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="969" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B2</text>
+<rect x="1003" y="388" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="1030" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B3</text>
+<rect x="1064" y="388" width="54" height="48" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="1091" y="419" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">B4</text>
+<text x="637" y="496" font-size="23" style="fill:#166534" font-weight="bold" text-anchor="start">③ A回来：有命中，可以加载复用</text>
+<rect x="30" y="577" width="1140" height="106" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="52" y="616" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">改变的是“是否额外保存这次KV”，C仍然正常推理、正常返回。</text>
+<text x="52" y="652" font-size="22" style="fill:#475569" font-weight="normal" text-anchor="start">这不保证所有大请求都无用；只在确认压力后过滤，容量宽裕时仍正常保存。</text>
+</svg>

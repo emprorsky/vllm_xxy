@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+<title id="title">加载边界：为什么实际新增2016而不是2048</title><desc id="desc">GPU已有32 tokens，新增上限2048，按绝对位置256对齐后覆盖到2048边界，真正新增2048减32等于2016。示意图不按长度比例。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="650" fill="white"/>
+<text x="35" y="48" font-size="28" style="fill:#172554" font-weight="bold" text-anchor="start">问题：实际加载了多少，必须与报告给引擎的数量一致</text>
+<text x="35" y="91" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="start">已知：GPU已有前32 tokens；最多新增2048；文件按256-token边界处理</text>
+<text x="35" y="151" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">① 若直接增加2048：想象的终点会到32 + 2048 = 2080</text>
+<rect x="55" y="180" width="150" height="62" rx="4" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="130" y="219" font-size="21" style="fill:#172554" font-weight="normal" text-anchor="middle">GPU已有32</text>
+<rect x="205" y="180" width="800" height="62" rx="4" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="605" y="219" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">希望新增2048，但2080不是256的整数倍边界</text>
+<text x="55" y="270" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="start">0</text>
+<text x="205" y="270" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">32</text>
+<text x="1005" y="270" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">2080</text>
+<text x="35" y="325" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">② 向下对齐到2048：真正新加载的区间只有32到2048</text>
+<rect x="55" y="355" width="150" height="62" rx="4" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="130" y="394" font-size="21" style="fill:#172554" font-weight="normal" text-anchor="middle">原有32</text>
+<rect x="205" y="355" width="730" height="62" rx="4" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="570" y="394" font-size="25" style="fill:#166534" font-weight="bold" text-anchor="middle">真正新增2016</text>
+<rect x="935" y="355" width="70" height="62" rx="4" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="970" y="394" font-size="21" style="fill:#b91c1c" font-weight="normal" text-anchor="middle">32</text>
+<text x="55" y="448" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="start">0</text>
+<text x="205" y="448" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">32</text>
+<text x="935" y="448" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">2048</text>
+<text x="1005" y="448" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">2080</text>
+<rect x="30" y="481" width="1140" height="99" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="54" y="520" font-size="27" style="fill:#172554" font-weight="bold" text-anchor="start">前2048已覆盖 = GPU原有32 + 本次加载2016</text>
+<text x="54" y="557" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="start">如果还报告“新增2048”，就会多报32个；修复要核对实际加载终点。</text>
+<text x="35" y="619" font-size="20" style="fill:#475569" font-weight="normal" text-anchor="start">数字表示token区间边界；图为便于观察，不按token数量比例绘制。</text>
+</svg>
