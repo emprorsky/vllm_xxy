@@ -136,6 +136,15 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
                     logprobs=False,
                 )
 
+            warmed_partial_prefix = storage_tier == "disk" and name == "coding-20"
+            if warmed_partial_prefix:
+                await query(
+                    tokens[:33],
+                    f"proof-{name}-gpu-prefix32",
+                    skip=True,
+                    logprobs=False,
+                )
+
             def disk_bytes(verified=False):
                 return sum(
                     row.get("bytes", 0)
@@ -152,6 +161,15 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
             actual_verified = (
                 disk_bytes(True) - before_verified if storage_tier == "disk" else 0
             )
+            cap_reconciled = False
+            if warmed_partial_prefix:
+                for path in (output / "admission").glob("admission-*.jsonl"):
+                    for line in path.read_text().splitlines():
+                        event = json.loads(line)
+                        if event.get("event") == "load_cap_boundary_reconciled" and (
+                            f"proof-{name}-restored" in event["request_id"]
+                        ):
+                            cap_reconciled = True
             baseline = difference(cold, gpu)
             comparison = difference(cold, restored)
             limit = max(0.3, 2 * (baseline["max_shared_logprob_delta"] or 0))
@@ -190,6 +208,8 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
                 "cpu_retrieved_tokens": actual_reads,
                 "disk_read_bytes": actual_disk,
                 "disk_verified_read_bytes": actual_verified,
+                "warmed_partial_gpu_prefix_32": warmed_partial_prefix,
+                "partial_prefix_cap_reconciled": cap_reconciled,
                 "cold": cold,
                 "gpu": gpu,
                 "restored": restored,
@@ -220,6 +240,9 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
             storage_tier != "disk"
             or r["disk_read_bytes"] > 0
             and r["disk_read_bytes"] == r["disk_verified_read_bytes"]
+        )
+        and (
+            not r["warmed_partial_gpu_prefix_32"] or r["partial_prefix_cap_reconciled"]
         )
         for r in records
     )

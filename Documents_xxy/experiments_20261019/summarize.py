@@ -101,6 +101,10 @@ def collect(directory):
     row["cpu_retrieved_tokens"] = sum(
         int(n) for n in re.findall(r"Retrieved (\d+) out of", logs)
     )
+    file_tier = bool(environment.get("LMCACHE_LOCAL_DISK"))
+    row["host_stored_tokens"] = row["cpu_stored_tokens"]
+    row["host_retrieved_tokens"] = row["cpu_retrieved_tokens"]
+    row["host_metric_scope"] = "CPU_and_file_aggregate" if file_tier else "CPU_only"
     decisions = []
     eviction_chunks = 0
     disk_io = Counter()
@@ -119,7 +123,8 @@ def collect(directory):
     row["admission_decisions"] = len(decisions)
     row["admission_skips"] = sum(not e["save"] for e in decisions)
     row["admission_pressure"] = sum(e["pressure"] for e in decisions)
-    row["cpu_eviction_chunks_observed"] = eviction_chunks
+    row["cpu_eviction_chunks_observed"] = 0 if file_tier else eviction_chunks
+    row["file_eviction_chunks_observed"] = eviction_chunks if file_tier else 0
     row.update(disk_io)
     path = directory / "router_decisions.jsonl"
     if path.exists():

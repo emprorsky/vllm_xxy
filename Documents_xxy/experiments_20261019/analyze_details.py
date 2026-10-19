@@ -66,6 +66,42 @@ def analyze(run):
             and r["output_tokens"] != trace[r["request_id"]]["requested_output_budget"]
         ],
     }
+    step_files = list((run / "admission").glob("prefill-steps-*.jsonl"))
+    if step_files:
+        chunks = defaultdict(list)
+        for path in step_files:
+            for line in path.read_text().splitlines():
+                for event in json.loads(line)["requests"]:
+                    rid = next(
+                        (
+                            rid
+                            for rid in trace
+                            if event["request_id"].startswith("cmpl-" + rid + "-")
+                        ),
+                        None,
+                    )
+                    if rid is not None:
+                        chunks[rid].append(event)
+        sizes = [
+            e["scheduled_prefill_tokens"] for events in chunks.values() for e in events
+        ]
+        result["prefill_chunk_diagnostic"] = {
+            "scope": "scheduled work with logging overhead; not performance data",
+            "requests_observed": len(chunks),
+            "requests_split_before_prompt_complete": sum(
+                any(e["remaining_prompt_tokens"] > 0 for e in events)
+                for events in chunks.values()
+            ),
+            "requests_with_multiple_prefill_schedules": sum(
+                len(events) > 1 for events in chunks.values()
+            ),
+            "scheduled_prefill_tokens_sum": sum(sizes),
+            "scheduled_prefill_chunk_tokens": {
+                f"p{q}": percentile(sizes, q) for q in [50, 95, 99]
+            },
+            "scheduled_prefill_chunk_tokens_max": max(sizes, default=None),
+            "per_request": chunks,
+        }
     if (run / "router_decisions.jsonl").exists():
         events = [
             json.loads(x)

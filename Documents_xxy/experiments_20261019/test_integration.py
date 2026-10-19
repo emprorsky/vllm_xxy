@@ -26,6 +26,35 @@ def test_runner_rejects_live_port_before_launch():
             check_ports_available({"workers": [{"port": port}]})
 
 
+@pytest.mark.parametrize("gpu_prefix", [0, 32, 288, 512])
+def test_disk_capped_load_preserves_absolute_endpoint(monkeypatch, gpu_prefix):
+    from .disk_adapter import DiskWorkingSetLMCacheConnector
+    from .lmcache_adapter import WorkingSetLMCacheConnector
+
+    endpoint = (gpu_prefix + 2048) // 256 * 256
+    connector = DiskWorkingSetLMCacheConnector.__new__(DiskWorkingSetLMCacheConnector)
+    connector._chunk = 256
+    connector._log = io.StringIO()
+    connector._lmcache_engine = SimpleNamespace(
+        _max_tokens_per_load=2048,
+        load_specs={
+            "r": SimpleNamespace(
+                vllm_cached_tokens=gpu_prefix, lmcache_cached_tokens=endpoint
+            )
+        },
+    )
+    monkeypatch.setattr(
+        WorkingSetLMCacheConnector,
+        "get_num_new_matched_tokens",
+        lambda *args: (2048, False),
+    )
+    request = SimpleNamespace(request_id="r", num_tokens=4000)
+    matched, asynchronous = connector.get_num_new_matched_tokens(request, gpu_prefix)
+    assert matched + gpu_prefix == endpoint
+    assert 0 <= matched <= 2048
+    assert not asynchronous
+
+
 def test_readiness_rejects_another_process_health_endpoint():
     import asyncio
     import subprocess

@@ -25,6 +25,40 @@ class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
             self._telemetry_path.name.replace("cpu-", "disk-")
         )
 
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        result = super().get_num_new_matched_tokens(request, num_computed_tokens)
+        adapter = self._lmcache_engine
+        if result[0] is None or result[0] <= 0 or adapter._max_tokens_per_load <= 0:
+            return result
+        spec = adapter.load_specs.get(request.request_id)
+        if spec is None:
+            return result
+        expected = (
+            spec.lmcache_cached_tokens
+            - spec.vllm_cached_tokens
+            - int(spec.lmcache_cached_tokens == request.num_tokens)
+        )
+        if expected != result[0]:
+            # The upstream cap rounds the absolute endpoint down to a chunk,
+            # but returns the unrounded delta when the GPU prefix is partial.
+            if not 0 <= result[0] - expected < self._chunk or expected < 0:
+                raise ValueError("Unexpected capped-load endpoint mismatch")
+            self._log.write(
+                json.dumps(
+                    {
+                        "event": "load_cap_boundary_reconciled",
+                        "request_id": request.request_id,
+                        "reported": result[0],
+                        "reconciled": expected,
+                        "gpu_prefix": spec.vllm_cached_tokens,
+                        "load_endpoint": spec.lmcache_cached_tokens,
+                    }
+                )
+                + "\n"
+            )
+            result = (expected, result[1])
+        return result
+
     def _start_observer(self):
         if self._observer_started:
             return

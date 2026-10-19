@@ -59,6 +59,7 @@ for trace in ["holdout_coding", "holdout_coding_8k"]:
         )
     )
 COMPARISONS += [
+    ("文件缓存准入最终复验", "FINAL_DISK_none", "FINAL_DISK_conditioned"),
     ("2P2D CPU准入迁移筛选", "SCREEN_PDCPU2_none", "SCREEN_PDCPU2_conditioned"),
     (
         "剩余工作路由独立任务集",

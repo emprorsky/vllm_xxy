@@ -74,7 +74,13 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "pd_cpu2":
+    if stage == "disk_final":
+        for name, config in configurations("disk"):
+            config["required_checks"] += [
+                str(ROOT / "checks/disk_prefix_fidelity_boundary/manifest.json")
+            ]
+            result.append((name, config))
+    elif stage == "pd_cpu2":
         for name, source in configurations("pd_cpu"):
             mode = name.removeprefix("PDCPU_")
             if mode == "off":
@@ -617,6 +623,7 @@ def main():
             "graph_router",
             "architecture_final",
             "pd_cpu2",
+            "disk_final",
         ],
         required=True,
     )

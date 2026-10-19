@@ -136,3 +136,10 @@ INT8 KV单卡代码探测通过，但CPU恢复中4/11项超过原先冻结的概
 `pd_cpu2`在架构三轮之后运行2P2D可选CPU写入迁移筛选，4实例各0.25GiB，
 总CPU KV预算1GiB、每实例maxseq2；默认保存与条件化保存均保持NIXL优先必需交接。
 它与maxseq8的架构组分别统计，不跨组直接归因。
+
+文件层限流修复：LMCache的max_tokens_per_load会把绝对终点按chunk对齐，但原返回
+新增量可能未扣除非chunk对齐GPU前缀。Disk adapter将返回值与LoadSpec端点守恒，
+只允许小于一个chunk的向下修正，保持原状态和断言；43项测试通过。
+`disk_prefix_fidelity_boundary`主动暖GPU32-token前缀，并要求真实reconciled事件、
+完整文件哈希和11项模型门禁；通过后才执行`disk_final`。
+开发阶段V3_DISK失败/筛选与FINAL_DISK正式三轮分别统计。
