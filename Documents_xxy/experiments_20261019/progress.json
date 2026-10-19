@@ -1,6 +1,6 @@
 {
-  "stage": "首轮完成；CPU KV恢复正确性待修复、独立复验待完成",
-  "status": "validation_failed",
+  "stage": "CPU布局修复通过；O/R/L/量化独立复验与改进路由筛选",
+  "status": "running",
   "completed_runs": 62,
   "successful_responses": 6976,
   "completed": [
@@ -11,21 +11,27 @@
     "1P1D/2P2D/1P2D/2P1D及同资源2/3/4副本首轮",
     "Chunk budget/开关、自然GPU容量、AWQ敏感性首轮",
     "20项原型测试、31项已有调度回归",
-    "配置/源码哈希、逐请求指标、原始日志与CSV/JSON/Markdown汇总"
+    "配置/源码哈希、逐请求指标、原始日志与CSV/JSON/Markdown汇总",
+    "CPU打包KV复制根因定位与V3提前初始化修复",
+    "逐元素复制检查与11个模型级恢复探测通过",
+    "新增测试25项通过",
+    "BF16/AWQ各6个非强制代码生成执行检查通过",
+    "原路由三轮：work/cost未稳定超过threshold，已保留负结果"
   ],
-  "running": [],
+  "running": [
+    "GPU0：修复后offload四格三轮",
+    "GPU1：热点L三轮，随后自然容量/量化三轮与CPU容量/长轨迹",
+    "GPU2/3：剩余工作路由筛选，随后修复后R/O/L五格三轮"
+  ],
   "pending": [
-    "CPU KV复制/布局/后端兼容性根因定位及修复",
-    "修复后的内容依赖与概率一致性验收",
-    "核心正负对照至少三轮独立交错复验",
-    "KV FP8旧CLI参数适配、兼容性与质量验收",
-    "最终归因、图表与可用于简历的稳定收益结论"
+    "核心对照独立复验完成",
+    "改进路由筛选后复验",
+    "容量/长轨迹修复后重跑",
+    "最终归因与报告"
   ],
   "blockers": [
-    "CPU恢复加强验收11/11概率告警：offload性能收益全部隔离，根因未确认",
-    "默认预编译CUDA算子异常：所有正式对照统一native/Triton/eager",
-    "8驻留+8192token+LMCache曾无进展：保留失败；offload统一seq2另设关闭对照",
-    "KV FP8两次启动失败因旧参数calculate-kv-scales未被当前分支接受，非硬件不支持的证据",
-    "所有性能配置当前仅n=1，未通过独立复验"
+    "旧V2 offload数据永久隔离",
+    "Triton FP8 KV在SM86上不受支持",
+    "默认预编译自定义CUDA算子异常，统一native/Triton/eager"
   ]
 }

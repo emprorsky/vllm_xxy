@@ -65,7 +65,7 @@ def configuration(trace, gpus, blocks=512, budget=1024):
     }
 
 
-def local_policy(config):
+def local_policy(config, aging_s=10):
     config["server_args"] += [
         "--admission-policy",
         "cache_affinity",
@@ -74,7 +74,7 @@ def local_policy(config):
         "--kv-aware-candidate-window",
         "8",
         "--kv-aware-aging-threshold-s",
-        "10",
+        str(aging_s),
     ]
 
 

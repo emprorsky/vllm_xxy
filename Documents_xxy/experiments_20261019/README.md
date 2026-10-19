@@ -62,8 +62,21 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /root/miniconda3/envs/vllm-dev/bin/python -m py
 
 ## KV event 目录扩展
 
+追加路由：`threshold_remaining` 保留缓存优先/超阈值均衡规则，以剩余工作替代请求数，阈值单位固定为可见的 64-output-token 请求等价工作。`memory_remaining` 则模拟有限 batch 槽位和预计 KV 容量下的 FIFO 开始时间：对预计可用的前缀去重，新 suffix 私有计费，生成过的 KV 不随输出预算递减而释放。缓存来源仍是目录估计，不能称精确物理 pinned 状态或精确队列预测。超过 64 个在途任务时回退保守总工作量。
+
+`calibration.py` 使用独立输入、C=1，测量五个长度桶的 cold/cached TTFT 和 decode TPOT；只替换排序代理的部分系数，不模拟批处理、抢占与传输。
+
 `event_directory.py`/`events_router.py` 支持真实 ZMQ KV events、启动重放、序列缺口失效、payload 变化的 epoch 检测及原子重放发布。history 与 events 消融均开启相同引擎发布器和订阅器。
 
 `BlockStored` 可在 GPU 写入前发出，因此事件目录额外要求路由观察到覆盖该前缀的请求成功完成，才用于命中估计。移除、缺口与清空会撤销该确认。它是事件索引与完成确认的保守组合，仍有传输延迟，不能称为零延迟物理驻留 oracle。事件缺少物理重复副本 ID，移除按前缀撤销，可能低估仍存活的重复副本。
 
 限定：固定模型池、TP=1、dense full attention、单 group、16-token 完整块。salt/LoRA/MM、部分块和 REMOTE 条目排除。暂不叠加 CPU tier 身份或引擎热更新。事件目录只用于选路，计算复用始终由 vLLM 验证。
+
+
+## 后续兼容与联合验收
+
+- `dense_payload_bytes_per_token` 从实际 KV spec 获取 CPU payload 字节，在 worker 注册时与 LMCache 实际形状/dtype 交叉检查。INT8 内联 scale 计入 payload，不按权重 dtype 推算 KV 占用。
+- `pd_fidelity.py` 使用与性能回放首块不同的诊断前缀，检查 P 参考与真实 P/D 的概率/事实，并核对传输字节及 D 端计算。探测禁用可选 CPU 保存，防止预热正式轨迹。
+- PD proxy 保留 `experiment.*` 会话信息和可选 `lmcache.skip_save`，远端 KV 元数据仍以 P 响应为准。
+- `admission_optional_in_multi=True` 仅允许 LMCache 自己的 PD 模式关闭时使用，区分 CPU 可选保存和 NIXL 必需交接。MultiConnector 仍使用现成加载选择，NIXL 在前；联合路径必须完成 HND/PD 模型验收后才报告性能。
+- `status_snapshot.py --interval 20` 生成 outputs 下的 `status.md/status.json`。独立对照使用 `CONF_`，新任务验证集使用 `VALID_`；不根据验证集结果继续选参。

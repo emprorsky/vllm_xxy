@@ -108,7 +108,52 @@ def test_pd_malformed_decode_releases_both_ledgers(tmp_path):
     assert not json.loads(args.log.read_text().splitlines()[-1])["success"]
 
 
-def test_adapter_sets_skip_before_base_tracker_and_freezes(monkeypatch):
+def test_pd_preserves_session_but_remote_metadata_remains_authoritative(tmp_path):
+    recorded = []
+
+    class Capture(Upstream):
+        async def post(self, *args, **kwargs):
+            recorded.append(kwargs["json"]["kv_transfer_params"])
+            return await super().post(*args, **kwargs)
+
+        async def send(self, request, **kwargs):
+            recorded.append(json.loads(request.content)["kv_transfer_params"])
+            return self.response
+
+    args = argparse.Namespace(
+        prefillers=["http://p"],
+        decoders=["http://d"],
+        prefill_policy="rr",
+        decode_policy="work",
+        capacity_tokens=8192,
+        prefill_ms=0.1,
+        decode_ms=1,
+        log=tmp_path / "pd.jsonl",
+    )
+    app = pd_proxy.create_app(args)
+    with TestClient(app) as client:
+        app.state.client = Capture(httpx.Response(200, json={"choices": []}))
+        response = client.post(
+            "/v1/completions",
+            json={
+                "prompt": [1] * 32,
+                "kv_transfer_params": {
+                    "experiment.session_id": "session",
+                    "lmcache.skip_save": True,
+                    "remote_block_ids": [999],
+                },
+            },
+        )
+        assert response.status_code == 200
+    assert recorded[0]["do_remote_decode"] is True
+    assert "remote_block_ids" not in recorded[0]
+    assert recorded[1]["remote_block_ids"] == [1]
+    assert all(row["experiment.session_id"] == "session" for row in recorded)
+    assert all(row["lmcache.skip_save"] for row in recorded)
+
+
+@pytest.mark.parametrize("optional_pd", [False, True])
+def test_adapter_sets_skip_before_base_tracker_and_freezes(monkeypatch, optional_pd):
     from .lmcache_adapter import LMCacheConnectorV1, WorkingSetLMCacheConnector
 
     monkeypatch.setattr(
@@ -121,16 +166,24 @@ def test_adapter_sets_skip_before_base_tracker_and_freezes(monkeypatch):
     )
     adapter._log = io.StringIO()
     adapter._telemetry = lambda: TierTelemetry(0, 4, 0, 0)
+    adapter._optional_cpu_in_multi = optional_pd
     request = SimpleNamespace(
         request_id="id",
         prompt_token_ids=[1] * 1024,
         kv_transfer_params={"experiment.session_id": "session"},
         sampling_params=SimpleNamespace(extra_args={"existing": 42}),
     )
+    expected_transfer = {"lmcache.skip_save": True}
+    if optional_pd:
+        request.kv_transfer_params["do_remote_decode"] = True
+        request.sampling_params.extra_args["kv_transfer_params"] = {
+            "do_remote_decode": True
+        }
+        expected_transfer["do_remote_decode"] = True
     assert adapter.get_num_new_matched_tokens(request, 0) == (0, False)
     assert request.sampling_params.extra_args == {
         "existing": 42,
-        "kv_transfer_params": {"lmcache.skip_save": True},
+        "kv_transfer_params": expected_transfer,
     }
     adapter.get_num_new_matched_tokens(request, 0)
     assert len(adapter._log.getvalue().splitlines()) == 1
@@ -156,6 +209,7 @@ def test_packed_layout_rejects_v2_before_storage_registration(monkeypatch):
 
 
 def test_packed_layout_is_discovered_before_storage_allocates(monkeypatch):
+    import torch
     from lmcache.v1.gpu_connector.gpu_connectors import VLLMPagedMemGPUConnectorV3
 
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
@@ -170,12 +224,16 @@ def test_packed_layout_is_discovered_before_storage_allocates(monkeypatch):
     adapter = object.__new__(WorkingSetLMCacheConnector)
     adapter._exp_role = KVConnectorRole.WORKER
     adapter._chunk = 256
+    adapter._kv_bytes = 36864
     adapter._log = io.StringIO()
     adapter._start_observer = lambda: calls.append("observer")
     adapter._lmcache_engine = SimpleNamespace(
         lmcache_engine=SimpleNamespace(
             gpu_connector=connector,
-            metadata=SimpleNamespace(get_shapes=lambda n: [(1, 36, n, 512)]),
+            metadata=SimpleNamespace(
+                get_shapes=lambda n: [torch.Size((1, 36, n, 512))],
+                get_dtypes=lambda: [torch.bfloat16],
+            ),
         )
     )
     monkeypatch.setattr(
@@ -232,6 +290,51 @@ def test_code_probe_checks_execution_and_rejects_imports():
     assert not execute_code(
         "import os\ndef sum_even(nums): return 0", "sum_even", tests
     )["passed"]
+
+
+def test_cpu_payload_accounting_includes_inline_int8_scales():
+    import torch
+
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheGroupSpec
+
+    from .lmcache_adapter import dense_payload_bytes_per_token
+
+    for dtype, content_bytes, expected in [
+        (torch.bfloat16, None, 36864),
+        (torch.uint8, 264, 19008),
+    ]:
+        spec = FullAttentionSpec(
+            block_size=16,
+            num_kv_heads=2,
+            head_size=128,
+            dtype=dtype,
+            state_content_bytes=content_bytes,
+        )
+        config = SimpleNamespace(
+            kv_cache_groups=[
+                KVCacheGroupSpec(
+                    layer_names=[f"layer{i}" for i in range(36)],
+                    kv_cache_spec=spec,
+                )
+            ]
+        )
+        assert dense_payload_bytes_per_token(config) == expected
+
+
+def test_failed_correctness_dependency_prevents_performance_server_start(tmp_path):
+    import asyncio
+
+    from .run_experiment import run
+
+    check = tmp_path / "check.json"
+    check.write_text(json.dumps({"status": "failed", "result": {"passed": False}}))
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"workers": [], "required_checks": [str(check)]}))
+    output = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="required correctness check"):
+        asyncio.run(run(argparse.Namespace(config=config, output=output)))
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["status"] == "failed" and manifest["commands"] == []
 
 
 @pytest.mark.parametrize("kind", ["router", "pd"])

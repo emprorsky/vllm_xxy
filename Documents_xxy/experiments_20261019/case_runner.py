@@ -47,11 +47,14 @@ async def execute(args):
     (args.output / f"{args.prefix}selection_{int(time.time())}.json").write_text(
         json.dumps(plan, indent=2)
     )
-    if args.wait_manifest:
+    dependencies = (
+        [args.wait_manifest] if args.wait_manifest else []
+    ) + args.wait_manifests
+    for dependency in dependencies:
         deadline = time.monotonic() + 10800
         while time.monotonic() < deadline:
-            if args.wait_manifest.exists():
-                previous = json.loads(args.wait_manifest.read_text())
+            if dependency.exists():
+                previous = json.loads(dependency.read_text())
                 if (
                     previous["status"] in {"completed", "failed"}
                     and "ended_at" in previous
@@ -95,6 +98,7 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--output", type=Path, default=ROOT / "runs")
     parser.add_argument("--wait-manifest", type=Path)
+    parser.add_argument("--wait-manifests", nargs="*", type=Path, default=[])
     parser.add_argument("--gpu-remap", nargs="*", default=[], metavar="SOURCE:TARGET")
     parser.add_argument("--worker-port-offset", type=int, default=0)
     asyncio.run(execute(parser.parse_args()))

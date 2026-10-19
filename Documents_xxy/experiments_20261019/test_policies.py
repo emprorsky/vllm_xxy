@@ -1,10 +1,12 @@
 """Behavior checks independent of CUDA and optional serving dependencies."""
 
 from .policies import (
+    MemoryDemand,
     PlacementPolicy,
     PrefixDirectory,
     TierTelemetry,
     WriteAdmission,
+    memory_queue_wait,
     prefix_keys,
 )
 
@@ -96,3 +98,58 @@ def test_remaining_work_uses_monotonic_observed_tokens_and_releases_progress():
     policy.finish("old", [1] * 32, False, now=2)
     policy.observe_output("old", 9)
     assert "old" not in policy.output_progress
+
+
+def test_threshold_feedback_balances_unequal_work_at_equal_request_counts():
+    import copy
+
+    policy = PlacementPolicy(2, "rr", decode_ms_per_token=10, balance_abs=1)
+    tokens = [1] * 32
+    for index in range(8):
+        policy.choose(str(index), tokens, 128 if index % 2 == 0 else 32, now=1)
+    for directory in policy.directories:
+        directory.observe(prefix_keys(tokens, directory.block_size), 1)
+    baseline = copy.deepcopy(policy)
+    baseline.policy = "threshold"
+    policy.policy = "threshold_remaining"
+    assert baseline.choose("next", tokens, 64, now=2)[0] == 0
+    worker, scores = policy.choose("next", tokens, 64, now=2)
+    assert scores[0].inflight == scores[1].inflight == 4
+    assert worker == 1
+
+
+def test_profiled_reservations_use_measured_cold_hit_and_decode_costs():
+    profile = {
+        "decode_ms": 20,
+        "bins": [{"input_tokens": 32, "cold_ms": 100, "cached_ms": 10}],
+    }
+    policy = PlacementPolicy(2, "work_remaining", cost_profile=profile)
+    tokens = [1] * 32
+    policy.directories[1].observe(prefix_keys(tokens, 16), 0)
+    worker, scores = policy.choose("r", tokens, 10, now=1)
+    assert worker == 1
+    assert scores[0].prefill_ms == 100 and scores[1].prefill_ms == 10
+    assert policy.reservations["r"] == (1, 210)
+    policy.observe_output("r", 5)
+    assert policy.reservations["r"] == (1, 100)
+
+
+def test_memory_queue_counts_shared_prefix_once_and_waits_for_capacity():
+    shared = ("root", "shared")
+    jobs = [MemoryDemand(4, shared, 100), MemoryDemand(2, shared, 20)]
+    # Eight tokens fit concurrently; the new private suffix waits for the
+    # shorter request to release its two tokens, not the full 120 ms sum.
+    assert memory_queue_wait(jobs, MemoryDemand(2, shared, 0), 8, 1, 4) == 20
+    assert memory_queue_wait(jobs, MemoryDemand(2, shared, 0), 100, 1, 1) == 120
+    assert memory_queue_wait([], MemoryDemand(10, (), 0), 8, 1, 4) == 1e12
+
+
+def test_generated_kv_is_not_freed_when_output_budget_decreases():
+    policy = PlacementPolicy(2, "memory_remaining", capacity_tokens=128, max_batch=2)
+    policy.choose("r", [1] * 32, 16, now=1)
+    memory = policy.memory_demands["r"]
+    policy.observe_output("r", 15)
+    assert policy.memory_demands["r"] == memory
+    assert policy.reservations["r"][1] == policy.decode_ms_per_token
+    policy.finish("r", [1] * 32, False, now=2)
+    assert not policy.memory_demands and not policy.output_progress

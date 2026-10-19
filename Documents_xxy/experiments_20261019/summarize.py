@@ -82,9 +82,15 @@ def collect(directory):
     row["gpu_prefix_hit_ratio"] = (
         row["prefix_cache_hits"] / queries if queries else None
     )
-    logs = "\n".join(
-        p.read_text(errors="replace") for p in directory.glob("server_*.log")
-    )
+    worker_logs = [
+        p.read_text(errors="replace") for p in sorted(directory.glob("server_*.log"))
+    ]
+    logs = "\n".join(worker_logs)
+    row["gpu_kv_tokens_per_worker"] = [
+        int(match[-1].replace(",", "")) if match else None
+        for text in worker_logs
+        for match in [re.findall(r"GPU KV cache size: ([\d,]+) tokens", text)]
+    ]
     # These are completed data movement logs, not repeated lookup estimates.
     row["cpu_stored_tokens"] = sum(
         int(n) for n in re.findall(r"Stored (\d+) out of total", logs)

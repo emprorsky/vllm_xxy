@@ -70,6 +70,14 @@ def create_app(args):
         ):
             raise HTTPException(400, "PD proxy requires one token-ID prompt")
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        params = payload.get("kv_transfer_params") or {}
+        if not isinstance(params, dict):
+            raise HTTPException(400, "kv_transfer_params must be an object")
+        optional = {
+            key: value
+            for key, value in params.items()
+            if key.startswith("experiment.") or key == "lmcache.skip_save"
+        }
         p_index, p_scores = p_policy.choose(rid, tokens, 0)
         p_start = time.monotonic()
         try:
@@ -79,6 +87,7 @@ def create_app(args):
                 "max_tokens": 1,
                 "return_token_ids": False,
                 "kv_transfer_params": {
+                    **optional,
                     "do_remote_decode": True,
                     "do_remote_prefill": False,
                 },
@@ -113,7 +122,7 @@ def create_app(args):
             d_index, d_scores = d_policy.choose(
                 rid, tokens, int(payload.get("max_tokens", 16))
             )
-            decode = {**payload, "kv_transfer_params": transfer}
+            decode = {**payload, "kv_transfer_params": {**optional, **transfer}}
             upstream = await app.state.client.send(
                 app.state.client.build_request(
                     "POST",

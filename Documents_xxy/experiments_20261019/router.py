@@ -35,6 +35,10 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
         balance_rel=args.balance_rel,
         eviction_weight=args.eviction_weight,
         ttl_s=args.ttl,
+        cost_profile=json.loads(Path(args.cost_profile).read_text())
+        if getattr(args, "cost_profile", None)
+        else None,
+        max_batch=getattr(args, "max_batch", 8),
     )
     args.log.parent.mkdir(parents=True, exist_ok=True)
     log = args.log.open("a", encoding="utf-8", buffering=1)
@@ -80,6 +84,7 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
         track_remaining = args.policy.endswith("_remaining")
         if track_remaining and payload.get("n", 1) != 1:
             raise HTTPException(400, "Remaining-work router currently requires n=1")
+        decision_start = time.perf_counter()
         try:
             worker, scores = policy.choose(
                 request_id, tokens, int(payload.get("max_tokens", 16))
@@ -94,6 +99,7 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
             "directory_source": directory_source,
             "timestamp": time.time(),
             "scores": [asdict(s) for s in scores],
+            "decision_ms": (time.perf_counter() - decision_start) * 1000,
         }
         log.write(json.dumps({**event, "event": "dispatch"}) + "\n")
         try:
@@ -198,6 +204,8 @@ def main():
             "cost",
             "work_remaining",
             "cost_remaining",
+            "threshold_remaining",
+            "memory_remaining",
         ],
         default="cost",
     )
@@ -208,6 +216,8 @@ def main():
     parser.add_argument("--balance-rel", type=float, default=1.5)
     parser.add_argument("--eviction-weight", type=float, default=1)
     parser.add_argument("--ttl", type=float, default=60)
+    parser.add_argument("--cost-profile", type=Path)
+    parser.add_argument("--max-batch", type=int, default=8)
     parser.add_argument("--port", type=int, default=8190)
     parser.add_argument("--log", type=Path, required=True)
     args = parser.parse_args()

@@ -25,11 +25,41 @@ from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_connector import (
 from .policies import TierTelemetry, WriteAdmission
 
 
+def dense_payload_bytes_per_token(kv_cache_config):
+    """Use cache specs, including inline quantization scales, not weight dtype."""
+    if kv_cache_config is None:
+        return None
+    from vllm.v1.kv_cache_interface import FullAttentionSpec
+
+    total = 0
+    for group in kv_cache_config.kv_cache_groups:
+        specs = getattr(group.kv_cache_spec, "kv_cache_specs", None)
+        for name in group.layer_names:
+            spec = specs[name] if specs is not None else group.kv_cache_spec
+            if not isinstance(spec, FullAttentionSpec) or spec.tokens_per_state != 1:
+                raise ValueError(
+                    "CPU admission payload accounting requires dense attention"
+                )
+            if spec.unpadded_page_size_bytes % spec.block_size:
+                raise ValueError("non-integral KV payload bytes per token")
+            total += spec.unpadded_page_size_bytes // spec.block_size
+    return total or None
+
+
 class WorkingSetLMCacheConnector(LMCacheConnectorV1):
     def __init__(self, vllm_config, role, kv_cache_config):
         super().__init__(vllm_config, role, kv_cache_config)
         config = vllm_config.kv_transfer_config
         extra = config.kv_connector_extra_config
+        self._optional_cpu_in_multi = bool(
+            extra.get("admission_optional_in_multi", False)
+        )
+        if self._optional_cpu_in_multi:
+            own_pd = getattr(self._lmcache_engine._manager.config, "enable_pd", None)
+            if own_pd is not False:
+                raise ValueError(
+                    "Optional CPU admission requires LMCache enable_pd=False"
+                )
         if vllm_config.parallel_config.tensor_parallel_size != 1:
             raise ValueError("working-set experiment currently requires TP=1")
         if extra.get("use_layerwise", False):
@@ -50,6 +80,11 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
             (), dtype=vllm_config.model_config.dtype
         ).element_size()
         self._kv_bytes = 2 * hf.num_hidden_layers * heads * head_size * dtype_bytes
+        measured_bytes = dense_payload_bytes_per_token(kv_cache_config)
+        if measured_bytes is not None:
+            self._kv_bytes = measured_bytes
+        elif vllm_config.cache_config.cache_dtype not in {"auto", "bfloat16"}:
+            raise ValueError("Non-BF16 KV payload accounting requires cache specs")
         self._chunk = int(extra.get("admission_chunk_tokens", 256))
         self._capacity = int(extra.get("admission_cpu_bytes", 1024**3))
         self._admission = WriteAdmission(
@@ -155,12 +190,26 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
                 # metadata shapes. V3's first-transfer lazy init is too late.
                 connector.initialize_kvcaches_ptr(kvcaches=list(kv_caches.values()))
                 connector._initialize_kv_cache_pointers()
+                actual_bytes = sum(
+                    shape.numel() * dtype.itemsize
+                    for shape, dtype in zip(
+                        engine.metadata.get_shapes(1),
+                        engine.metadata.get_dtypes(),
+                        strict=True,
+                    )
+                )
+                if actual_bytes != self._kv_bytes:
+                    raise ValueError(
+                        "KV spec/transfer payload mismatch: "
+                        f"{self._kv_bytes}/{actual_bytes}"
+                    )
                 self._log.write(
                     json.dumps(
                         {
                             "event": "packed_transfer_layout_ready",
                             "connector": type(connector).__name__,
                             "format": str(connector.engine_kv_format),
+                            "kv_payload_bytes_per_token": actual_bytes,
                             "cpu_shapes": [
                                 list(shape)
                                 for shape in engine.metadata.get_shapes(self._chunk)
@@ -192,7 +241,10 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
         params = request.kv_transfer_params or {}
         if params.get("experiment.phase") == "validation":
             return result
-        if "disagg_spec" in params or params.get("do_remote_decode"):
+        if "disagg_spec" in params or (
+            params.get("do_remote_decode")
+            and not getattr(self, "_optional_cpu_in_multi", False)
+        ):
             self._log.write(
                 json.dumps({"event": "pd_bypass", "request_id": request.request_id})
                 + "\n"

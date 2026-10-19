@@ -73,6 +73,7 @@ def analyze(run):
         ]
         dispatches = [e for e in events if e.get("event") == "dispatch"]
         errors = []
+        latency_errors = []
         counterfactual_difference = 0
         for event in dispatches:
             scores = event["scores"]
@@ -90,6 +91,10 @@ def analyze(run):
                     .get("cached_tokens", 0)
                 )
                 errors.append(estimated - observed)
+                selected = scores[event["worker"]]
+                if row.get("ttft_s") is not None:
+                    prediction = (selected["queue_ms"] + selected["prefill_ms"]) / 1000
+                    latency_errors.append(prediction - row["ttft_s"])
         result["router"] = {
             "source": sorted(
                 {e.get("directory_source", "unknown") for e in dispatches}
@@ -107,14 +112,39 @@ def analyze(run):
             "usage_scope": (
                 "GPU-only for no-offload runs; combined may include external hits"
             ),
+            "predicted_ttft_mae_s": sum(abs(e) for e in latency_errors)
+            / len(latency_errors)
+            if latency_errors
+            else None,
+            "decision_ms": {
+                f"p{q}": percentile(
+                    [e["decision_ms"] for e in dispatches if "decision_ms" in e], q
+                )
+                for q in [50, 95, 99]
+            },
         }
         result["pd_pairs"] = dict(
             Counter(
                 f"P{e['prefill_worker']}->D{e['worker']}"
                 for e in events
-                if e.get("event") == "decode"
+                if e.get("event") == "decode" and e["request_id"] in by_id
             )
         )
+        event_files = list(run.glob("kv_events_worker_*.jsonl"))
+        if event_files:
+            result["event_subscription"] = {
+                path.name: dict(
+                    Counter(
+                        json.loads(line)["status"]
+                        for line in path.read_text().splitlines()
+                    )
+                )
+                for path in event_files
+            }
+            if (run / "event_state_after.json").exists():
+                result["event_state_after"] = json.loads(
+                    (run / "event_state_after.json").read_text()
+                )
         prefills = {e["request_id"]: e for e in events if e.get("event") == "prefill"}
         joined = [
             (prefills[e["request_id"]]["elapsed_s"], e["elapsed_s"])

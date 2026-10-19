@@ -220,6 +220,39 @@ class PlacementScore:
     prefill_ms: float
     eviction_ms: float
     total_ms: float
+    outstanding_private_tokens_est: int = 0
+    outstanding_shared_tokens_est: int = 0
+    max_batch_slots: int = 0
+
+
+@dataclass(frozen=True)
+class MemoryDemand:
+    private_tokens: int
+    cached_keys: tuple[str, ...]
+    remaining_ms: float
+
+
+def memory_queue_wait(jobs, incoming, capacity_tokens, block_size, max_batch):
+    """FIFO start-time proxy with finite batch slots and pinned KV capacity."""
+    if len(jobs) > 64:
+        return sum(job.remaining_ms for job in jobs)
+    active = []
+    clock = 0.0
+    for job in [*jobs, incoming]:
+        while True:
+            demands = [entry[1] for entry in active] + [job]
+            shared = set().union(*(d.cached_keys for d in demands))
+            tokens = sum(d.private_tokens for d in demands) + len(shared) * block_size
+            if len(active) < max_batch and tokens <= capacity_tokens:
+                break
+            if not active:
+                return 1e12
+            clock = min(entry[0] for entry in active)
+            active = [entry for entry in active if entry[0] > clock]
+        if job is incoming:
+            return clock
+        active.append((clock + max(job.remaining_ms, 0.001), job))
+    return clock
 
 
 class PlacementPolicy:
@@ -238,6 +271,8 @@ class PlacementPolicy:
         cache_threshold: float = 0.5,
         eviction_weight: float = 1.0,
         ttl_s: float = 60,
+        cost_profile: dict | None = None,
+        max_batch: int = 8,
     ):
         if workers <= 0 or policy not in {
             "rr",
@@ -248,22 +283,29 @@ class PlacementPolicy:
             "cost",
             "work_remaining",
             "cost_remaining",
+            "threshold_remaining",
+            "memory_remaining",
         }:
             raise ValueError("invalid worker count or policy")
-        if min(prefill_ms_per_token, decode_ms_per_token) < 0:
+        if min(prefill_ms_per_token, decode_ms_per_token) < 0 or max_batch < 1:
             raise ValueError("negative execution cost")
         self.policy = policy
         self.directories = [
             PrefixDirectory(capacity_tokens, block_size, ttl_s) for _ in range(workers)
         ]
+        self.cost_profile = cost_profile
         self.prefill_ms_per_token = prefill_ms_per_token
-        self.decode_ms_per_token = decode_ms_per_token
+        self.decode_ms_per_token = (
+            cost_profile["decode_ms"] if cost_profile else decode_ms_per_token
+        )
         self.balance_abs = balance_abs
         self.balance_rel = balance_rel
         self.cache_threshold = cache_threshold
         self.eviction_weight = eviction_weight
         self.reservations: dict[str, tuple[int, float]] = {}
         self.output_progress: dict[str, tuple[int, int]] = {}
+        self.memory_demands: dict[str, MemoryDemand] = {}
+        self.max_batch = max_batch
         self.cursor = 0
         self.completions: deque[tuple[float, int, int]] = deque(maxlen=4096)
 
@@ -287,12 +329,38 @@ class PlacementPolicy:
             ]
             cached = directory.match(keys, now)
             prefill = max(len(tokens) - cached, 0) * self.prefill_ms_per_token
+            if self.cost_profile:
+                from .calibration import prefill_cost
+
+                prefill = prefill_cost(self.cost_profile, len(tokens), cached)
             eviction = (
                 directory.eviction_penalty_tokens(keys, now)
                 * self.prefill_ms_per_token
                 * self.eviction_weight
             )
             queue = sum(outstanding)
+            if self.policy == "memory_remaining":
+                size = directory.block_size
+                private = (
+                    math.ceil((len(tokens) - cached + output_budget) / size) * size
+                )
+                incoming = MemoryDemand(private, tuple(keys[: cached // size]), 0)
+                jobs = [
+                    MemoryDemand(
+                        self.memory_demands[rid].private_tokens,
+                        self.memory_demands[rid].cached_keys,
+                        remaining,
+                    )
+                    for rid, (worker, remaining) in self.reservations.items()
+                    if worker == i
+                ]
+                queue = memory_queue_wait(
+                    jobs,
+                    incoming,
+                    directory.capacity_blocks * size - size,
+                    size,
+                    self.max_batch,
+                )
             scores.append(
                 PlacementScore(
                     i,
@@ -302,6 +370,14 @@ class PlacementPolicy:
                     prefill,
                     eviction,
                     queue + prefill + eviction,
+                    sum(job.private_tokens for job in jobs)
+                    if self.policy == "memory_remaining"
+                    else 0,
+                    len(set().union(*(job.cached_keys for job in jobs)))
+                    * directory.block_size
+                    if self.policy == "memory_remaining"
+                    else 0,
+                    self.max_batch if self.policy == "memory_remaining" else 0,
                 )
             )
         least = min(scores, key=lambda s: (s.inflight, s.worker))
@@ -315,9 +391,23 @@ class PlacementPolicy:
             chosen = least.worker
         elif self.policy == "prefix":
             chosen = affinity.worker
-        elif self.policy == "threshold":
-            difference = max(s.inflight for s in scores) - least.inflight
-            ratio = max(s.inflight for s in scores) / max(least.inflight, 1)
+        elif self.policy in {"threshold", "threshold_remaining"}:
+            if self.policy == "threshold_remaining":
+                least = min(scores, key=lambda s: (s.queue_ms, s.worker))
+                affinity = min(
+                    scores,
+                    key=lambda s: (-s.cached_tokens_est, s.queue_ms, s.worker),
+                )
+                # Keep the baseline's cache-first threshold rule. Work is
+                # normalized to a declared 64-output-token request, rather
+                # than changing the threshold with each incoming budget.
+                unit_ms = max(64 * self.decode_ms_per_token, 1)
+                maximum = max(s.queue_ms for s in scores)
+                difference = (maximum - least.queue_ms) / unit_ms
+                ratio = maximum / max(least.queue_ms, unit_ms)
+            else:
+                difference = max(s.inflight for s in scores) - least.inflight
+                ratio = max(s.inflight for s in scores) / max(least.inflight, 1)
             imbalanced = difference >= self.balance_abs and ratio >= self.balance_rel
             match = affinity.cached_tokens_est / len(tokens)
             chosen = (
@@ -341,6 +431,16 @@ class PlacementPolicy:
         self.reservations[request_id] = (chosen, reserve)
         if self.policy.endswith("_remaining"):
             self.output_progress[request_id] = (output_budget, 0)
+        if self.policy == "memory_remaining":
+            size = self.directories[chosen].block_size
+            self.memory_demands[request_id] = MemoryDemand(
+                math.ceil(
+                    (len(tokens) - selected.cached_tokens_est + output_budget) / size
+                )
+                * size,
+                tuple(keys[: selected.cached_tokens_est // size]),
+                reserve,
+            )
         return chosen, scores
 
     def observe_output(self, request_id: str, emitted_tokens: int) -> None:
@@ -367,6 +467,7 @@ class PlacementPolicy:
     ) -> None:
         reservation = self.reservations.pop(request_id, None)
         self.output_progress.pop(request_id, None)
+        self.memory_demands.pop(request_id, None)
         if reservation is None:
             return
         now = time.monotonic() if now is None else now

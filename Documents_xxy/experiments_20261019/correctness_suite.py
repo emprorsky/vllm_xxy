@@ -214,6 +214,8 @@ async def execute(args):
         offload(config, "none", 0.5)
     elif "AWQ" in args.model:
         config["server_args"] += ["--quantization", "auto_awq"]
+    if args.kv_cache_dtype:
+        config["server_args"] += ["--kv-cache-dtype", args.kv_cache_dtype]
     endpoint = f"http://127.0.0.1:{args.port}"
     argv = [
         sys.executable,
@@ -239,6 +241,8 @@ async def execute(args):
         + os.pathsep
         + os.environ.get("PATH", ""),
     }
+    if args.kv_cache_layout:
+        env["VLLM_KV_CACHE_LAYOUT"] = args.kv_cache_layout
     manifest = {
         "status": "starting",
         "started_at": time.time(),
@@ -263,6 +267,10 @@ async def execute(args):
                 result = await protocol(
                     args.model, endpoint, args.output, args.output / "server.log"
                 )
+            elif args.protocol == "profile":
+                from .calibration import calibrate
+
+                result = await calibrate(endpoint, args.output / "cost_profile.json")
             else:
                 from .quality_coding import evaluate
 
@@ -299,7 +307,11 @@ def main():
     parser.add_argument("--port", type=int, default=8270)
     parser.add_argument("--wait-manifest", type=Path)
     parser.add_argument("--model", default=MODEL)
-    parser.add_argument("--protocol", choices=["cpu", "coding"], default="cpu")
+    parser.add_argument("--kv-cache-dtype")
+    parser.add_argument("--kv-cache-layout")
+    parser.add_argument(
+        "--protocol", choices=["cpu", "coding", "profile"], default="cpu"
+    )
     asyncio.run(execute(parser.parse_args()))
 
 

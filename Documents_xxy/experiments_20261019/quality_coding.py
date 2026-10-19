@@ -112,7 +112,10 @@ async def evaluate(model, endpoints, output):
                         "prompt": prompt,
                         "max_tokens": 256,
                         "temperature": 0,
-                        "kv_transfer_params": {"lmcache.skip_save": True},
+                        "kv_transfer_params": {
+                            "lmcache.skip_save": True,
+                            "experiment.phase": "validation",
+                        },
                     },
                 )
                 response.raise_for_status()

@@ -76,6 +76,14 @@ async def run(args):
 
     save()
     try:
+        for check_path in config.get("required_checks", []):
+            check = json.loads(Path(check_path).read_text())
+            if check.get("status") != "completed" or not check.get("result", {}).get(
+                "passed"
+            ):
+                raise RuntimeError(
+                    f"required correctness check did not pass: {check_path}"
+                )
         workers = config["workers"]
         for index, worker in enumerate(workers):
             argv = [
@@ -164,10 +172,20 @@ async def run(args):
                 "balance_rel",
                 "eviction_weight",
                 "ttl",
+                "cost_profile",
+                "max_batch",
             ]:
                 if name in router and not (
                     config.get("pd")
-                    and name in {"balance_abs", "balance_rel", "eviction_weight", "ttl"}
+                    and name
+                    in {
+                        "balance_abs",
+                        "balance_rel",
+                        "eviction_weight",
+                        "ttl",
+                        "cost_profile",
+                        "max_batch",
+                    }
                 ):
                     argv.extend(["--" + name.replace("_", "-"), str(router[name])])
             handle = (args.output / "router.log").open("w")
@@ -195,8 +213,27 @@ async def run(args):
             from .quality_coding import evaluate
 
             manifest["coding_quality"] = await evaluate(
-                config["model"], endpoints, args.output / "coding_quality.json"
+                config["model"],
+                [endpoint] if config.get("pd") else endpoints,
+                args.output / "coding_quality.json",
             )
+        if config.get("pd_fidelity_probes", False):
+            from .pd_fidelity import validate_pd
+
+            manifest["pd_fidelity"] = await validate_pd(
+                config["model"],
+                endpoint,
+                prefills[0],
+                decodes,
+                args.output / "pd_fidelity.json",
+            )
+            if not manifest["pd_fidelity"]["passed"]:
+                raise RuntimeError("P/D fidelity probes did not pass")
+        if env.get("KVEXP_EVENT_ENDPOINTS"):
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.get(endpoint + "/kv-event-state")
+                response.raise_for_status()
+                (args.output / "event_state_before.json").write_text(response.text)
         manifest["status"] = "replaying"
         save()
         replay_args = argparse.Namespace(
@@ -212,6 +249,11 @@ async def run(args):
             slo_tpot=config.get("slo_tpot", 0.1),
         )
         result = await replay(replay_args)
+        if env.get("KVEXP_EVENT_ENDPOINTS"):
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.get(endpoint + "/kv-event-state")
+                response.raise_for_status()
+                (args.output / "event_state_after.json").write_text(response.text)
         if result["successful"] != result["requests_expected"]:
             raise RuntimeError("replay contains failed or unattempted requests")
         manifest["status"] = "completed"

@@ -43,7 +43,10 @@ def comparison(aggregate, names, title, path):
         title
         + (
             "\nOFFLOAD FIDELITY FAILED: performance observations quarantined"
-            if any(n.startswith(("O_", "D_", "LONG_")) for n in names)
+            if any(
+                aggregate[n].get("quarantined", n.startswith(("O_", "D_", "LONG_")))
+                for n in names
+            )
             else ""
         )
         + "\nMedian; whiskers = observed min/max, not confidence intervals",
@@ -115,6 +118,51 @@ def main():
         ),
     ]
     panels += [
+        (
+            "v3_offload",
+            [f"V3_O_seq2_{m}_cpu0p5" for m in ["off", "none", "fixed", "conditioned"]],
+            "Corrected packed KV transfer: CPU admission, fixed GPU/CPU capacity",
+        ),
+        (
+            "v3_combined",
+            [n for n in aggregate if n.startswith("V3_DR_")],
+            "Corrected transfer: routing x CPU write admission x local policy",
+        ),
+        (
+            "local_hot_confirm",
+            ["FIX_LHOT_L0", "FIX_LHOT_L1"],
+            "Hot prefix mechanism: GPU KV 4096, max context 2048",
+        ),
+        (
+            "routing_confirm",
+            [f"CONF_R_{p}" for p in ["threshold", "work", "cost"]],
+            "Independent repetitions: controlled hot-prefix routing",
+        ),
+        (
+            "remaining_public_confirm",
+            [f"CONF_REMAIN_public_coding_{p}" for p in ["threshold", "work_remaining"]],
+            "Public coding: count threshold vs observed remaining work",
+        ),
+        (
+            "quant_natural_confirm",
+            [f"CONF_QNAT_{q}_L{local}" for q in ["BF16", "AWQ"] for local in [0, 1]],
+            "8K coding, 32 sessions, same GPU memory budget, natural KV capacity",
+        ),
+        (
+            "holdout_local",
+            ["VALID_HOLDOUT_L0", "VALID_HOLDOUT_L1"],
+            "Disjoint tasks: local policy, natural KV capacity, 32 sessions",
+        ),
+        (
+            "holdout_offload",
+            [f"VALID_HOLDOUT_O_{m}" for m in ["none", "conditioned"]],
+            "Disjoint tasks: corrected CPU admission",
+        ),
+        (
+            "holdout_router",
+            [f"VALID_HOLDOUT_R_{p}" for p in ["threshold", "work_remaining"]],
+            "Disjoint tasks: frozen routing policies and coefficients",
+        ),
         (
             "events",
             [
