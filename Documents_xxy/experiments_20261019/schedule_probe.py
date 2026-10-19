@@ -4,10 +4,10 @@ import json
 import os
 from pathlib import Path
 
-from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 
 
-class PrefillProbeScheduler(Scheduler):
+class PrefillProbeScheduler(AsyncScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         directory = Path(os.environ["KVEXP_STATS_DIR"])

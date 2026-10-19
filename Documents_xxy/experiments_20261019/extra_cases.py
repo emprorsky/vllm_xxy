@@ -22,7 +22,7 @@ def natural(config):
 
 
 def disk_offload(config, mode, path):
-    offload(config, mode, 0.125)
+    offload(config, mode, 0.25)
     config["env"].update(
         LMCACHE_LOCAL_DISK=str(path), LMCACHE_MAX_LOCAL_DISK_SIZE="1.0"
     )
@@ -35,9 +35,9 @@ def disk_offload(config, mode, path):
     extra = transfer["kv_connector_extra_config"]
     del extra["admission_cpu_bytes"]
     extra["admission_capacity_bytes"] = 1024**3
-    extra["lmcache.max_tokens_per_load"] = 1024
+    extra["lmcache.max_tokens_per_load"] = 2048
     config["server_args"][index + 1] = json.dumps(transfer)
-    config["scope"] = "persistent_disk_1GiB_CPU_staging_0p125GiB_load_cap1024"
+    config["scope"] = "persistent_disk_1GiB_CPU_staging_0p25GiB_load_cap2048"
 
 
 def decode_graph(config, sizes=(1, 2, 4, 8)):
@@ -74,7 +74,28 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "graph_offload":
+    if stage == "graph_router":
+        for policy in ["threshold", "memory_remaining"]:
+            config = configuration("public_coding", [2, 3])
+            decode_graph(config)
+            config["router"] = {
+                "policy": policy,
+                "port": 8290,
+                "capacity_tokens": 8192,
+                "prefill_ms": 0.1,
+                "decode_ms": 35,
+                "max_batch": 8,
+                "cost_profile": str(
+                    ROOT / "checks/cost_profile_graph/cost_profile.json"
+                ),
+            }
+            config["required_checks"] = [
+                str(ROOT / "checks/cost_profile_graph/manifest.json")
+            ]
+            config["coding_quality_probes"] = True
+            config["scope"] = "Graph_profiled_FIFO_KV_router_public4K_GPU8192"
+            result.append((f"GRAPHR_{policy}", config))
+    elif stage == "graph_offload":
         for mode in ["off", "none", "conditioned"]:
             config = configuration("public_coding", [0])
             if mode == "off":
@@ -105,7 +126,7 @@ def configurations(stage):
             # Runner substitutes a unique per-run path before server startup.
             disk_offload(config, mode, "__PER_RUN_DISK_CACHE__")
             config["required_checks"] = [
-                str(ROOT / "checks/disk_prefix_fidelity/manifest.json")
+                str(ROOT / "checks/disk_prefix_fidelity_staging0p25/manifest.json")
             ]
             result.append((f"DISK_{mode}", config))
     elif stage == "chunk_diagnostic":
@@ -550,6 +571,7 @@ def main():
             "disk",
             "graph_offload",
             "graph_natural",
+            "graph_router",
         ],
         required=True,
     )

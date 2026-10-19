@@ -92,9 +92,10 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
         specification.update(
             noise_skip_save=False,
             required_actual_disk_read=True,
-            CPU_staging_GiB=0.125,
+            CPU_staging_GiB=0.25,
             persistent_disk_GiB=1.0,
-            max_tokens_per_load=1024,
+            max_tokens_per_load=2048,
+            verify_file_integrity=True,
             file_IO_scope="buffered_reads_include_OS_page_cache",
         )
     (output / "specification.json").write_text(json.dumps(specification, indent=2))
@@ -135,17 +136,22 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
                     logprobs=False,
                 )
 
-            def disk_bytes():
+            def disk_bytes(verified=False):
                 return sum(
                     row.get("bytes", 0)
                     for path in (output / "admission").glob("admission-*.jsonl")
                     for line in path.read_text().splitlines()
                     if (row := json.loads(line)).get("event") == "disk_read"
+                    and (not verified or row.get("verified"))
                 )
 
             before_disk = disk_bytes() if storage_tier == "disk" else 0
+            before_verified = disk_bytes(True) if storage_tier == "disk" else 0
             restored = await query(tokens, f"proof-{name}-restored", budget=budget)
             actual_disk = disk_bytes() - before_disk if storage_tier == "disk" else 0
+            actual_verified = (
+                disk_bytes(True) - before_verified if storage_tier == "disk" else 0
+            )
             baseline = difference(cold, gpu)
             comparison = difference(cold, restored)
             limit = max(0.3, 2 * (baseline["max_shared_logprob_delta"] or 0))
@@ -183,6 +189,7 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
                 "content_gate": content,
                 "cpu_retrieved_tokens": actual_reads,
                 "disk_read_bytes": actual_disk,
+                "disk_verified_read_bytes": actual_verified,
                 "cold": cold,
                 "gpu": gpu,
                 "restored": restored,
@@ -209,7 +216,11 @@ async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
         r["numerical_gate"]
         and r["content_gate"]
         and r["cpu_retrieved_tokens"] > 0
-        and (storage_tier != "disk" or r["disk_read_bytes"] > 0)
+        and (
+            storage_tier != "disk"
+            or r["disk_read_bytes"] > 0
+            and r["disk_read_bytes"] == r["disk_verified_read_bytes"]
+        )
         for r in records
     )
     return {
@@ -248,6 +259,7 @@ async def execute(args):
             from .extra_cases import disk_offload
 
             disk_offload(config, "none", args.output.resolve() / "disk-cache")
+            config["env"]["KVEXP_VERIFY_FILE_PAYLOAD"] = "1"
         else:
             offload(config, "none", 0.5)
     elif "AWQ" in args.model:

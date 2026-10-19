@@ -13,9 +13,10 @@ from . import pd_proxy, router
 from .policies import TierTelemetry, WriteAdmission
 
 
-@pytest.mark.parametrize("contents", [b"abcd", b"ab", None])
+@pytest.mark.parametrize("contents", [b"abcd", b"ab", b"abce", None])
 def test_disk_probe_only_accepts_complete_payload(tmp_path, contents):
     """A missing/short file cannot turn old CPU staging bytes into valid KV."""
+    import hashlib
     import threading
 
     from .disk_adapter import DiskWorkingSetLMCacheConnector
@@ -41,6 +42,8 @@ def test_disk_probe_only_accepts_complete_payload(tmp_path, contents):
     connector._stop_event.set()
     connector._start_observer()
     path = tmp_path / "payload"
+    connector._verify_file_integrity = True
+    connector._file_digests = {str(path): hashlib.sha256(b"abcd").hexdigest()}
     if contents is not None:
         path.write_bytes(contents)
     buffer = bytearray(b"xxxx")
@@ -49,7 +52,7 @@ def test_disk_probe_only_accepts_complete_payload(tmp_path, contents):
         assert bytes(buffer) == contents
         assert json.loads(connector._log.getvalue())["bytes"] == 4
     else:
-        with pytest.raises((EOFError, FileNotFoundError)):
+        with pytest.raises((EOFError, FileNotFoundError, ValueError)):
             disk.read_file("key", buffer, path)
         assert not connector._log.getvalue()
 

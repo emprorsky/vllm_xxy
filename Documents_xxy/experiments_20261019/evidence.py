@@ -59,6 +59,7 @@ for trace in ["holdout_coding", "holdout_coding_8k"]:
         )
     )
 COMPARISONS += [
+    ("Graph下内存感知路由", "CONF_GRAPHR_threshold", "CONF_GRAPHR_memory_remaining"),
     ("Graph下本地调度", "CONF_GRAPHN_L0", "CONF_GRAPHN_L1"),
     ("Graph下CPU准入", "CONF_GRAPHO_none", "CONF_GRAPHO_conditioned"),
     ("Graph下关闭CPU参照", "CONF_GRAPHO_off", "CONF_GRAPHO_conditioned"),

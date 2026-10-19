@@ -4,6 +4,7 @@ CPU and disk copies overlap: only persistent disk capacity enters the policy.
 Buffered file I/O may be served by the OS page cache; this is not a NAND timer.
 """
 
+import hashlib
 import json
 import os
 import threading
@@ -17,6 +18,8 @@ from .policies import TierTelemetry
 
 class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
     def __init__(self, *args, **kwargs):
+        self._verify_file_integrity = os.environ.get("KVEXP_VERIFY_FILE_PAYLOAD") == "1"
+        self._file_digests = {}
         super().__init__(*args, **kwargs)
         self._telemetry_path = self._telemetry_path.with_name(
             self._telemetry_path.name.replace("cpu-", "disk-")
@@ -56,7 +59,11 @@ class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
 
         def write(buffer, path):
             start = time.monotonic()
+            verify = getattr(self, "_verify_file_integrity", False)
+            digest = hashlib.sha256(buffer).hexdigest() if verify else None
             result = original_write(buffer, path)
+            if verify:
+                self._file_digests[str(path)] = digest
             self._log.write(
                 json.dumps(
                     {
@@ -64,6 +71,7 @@ class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
                         "bytes": len(buffer),
                         "elapsed_s": time.monotonic() - start,
                         "timestamp": time.time(),
+                        "sha256": digest,
                     }
                 )
                 + "\n"
@@ -77,6 +85,11 @@ class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
                 count = source.readinto(buffer)
             if count != len(buffer):
                 raise EOFError(f"KV file read {count}/{len(buffer)} bytes")
+            verify = getattr(self, "_verify_file_integrity", False)
+            if verify:
+                digest = hashlib.sha256(buffer).hexdigest()
+                if digest != self._file_digests.get(str(path)):
+                    raise ValueError("KV file digest mismatch or unknown origin")
             self._log.write(
                 json.dumps(
                     {
@@ -84,6 +97,7 @@ class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
                         "bytes": count,
                         "elapsed_s": time.monotonic() - start,
                         "timestamp": time.time(),
+                        "verified": verify,
                     }
                 )
                 + "\n"
