@@ -191,6 +191,12 @@ async def run(args):
                 args.output / "quality_probes.json",
             )
             manifest["basic_output_gate"] = "passed"
+        if config.get("coding_quality_probes", False):
+            from .quality_coding import evaluate
+
+            manifest["coding_quality"] = await evaluate(
+                config["model"], endpoints, args.output / "coding_quality.json"
+            )
         manifest["status"] = "replaying"
         save()
         replay_args = argparse.Namespace(

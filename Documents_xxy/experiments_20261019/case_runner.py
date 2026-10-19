@@ -32,6 +32,11 @@ async def execute(args):
         selected = [(n, c) for n, c in selected if n in args.names]
     if not selected:
         raise ValueError("no selected cases")
+    remap = dict(pair.split(":") for pair in args.gpu_remap)
+    for _, config in selected:
+        for worker in config["workers"]:
+            worker["gpu"] = int(remap.get(str(worker["gpu"]), worker["gpu"]))
+            worker["port"] += args.worker_port_offset
     args.output.mkdir(parents=True, exist_ok=True)
     plan = {
         "created_at": time.time(),
@@ -90,6 +95,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--output", type=Path, default=ROOT / "runs")
     parser.add_argument("--wait-manifest", type=Path)
+    parser.add_argument("--gpu-remap", nargs="*", default=[], metavar="SOURCE:TARGET")
+    parser.add_argument("--worker-port-offset", type=int, default=0)
     asyncio.run(execute(parser.parse_args()))
 
 

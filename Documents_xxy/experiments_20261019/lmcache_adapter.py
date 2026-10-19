@@ -137,6 +137,38 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
         threading.Thread(target=observe, daemon=True, name="kvexp-cpu-observer").start()
 
     def register_kv_caches(self, kv_caches):
+        if self._exp_role == KVConnectorRole.WORKER:
+            engine = self._lmcache_engine.lmcache_engine
+            connector = engine.gpu_connector
+            packed = any(cache.ndim == 4 for cache in kv_caches.values())
+            if packed:
+                from lmcache.v1.gpu_connector.gpu_connectors import (
+                    VLLMPagedMemGPUConnectorV3,
+                )
+
+                if not isinstance(connector, VLLMPagedMemGPUConnectorV3):
+                    raise ValueError(
+                        "Packed K/V requires LMCACHE_USE_GPU_CONNECTOR_V3=True; "
+                        "V2's split-K/V buffer silently corrupts this layout."
+                    )
+                # Discover the fused plane BEFORE storage allocators capture
+                # metadata shapes. V3's first-transfer lazy init is too late.
+                connector.initialize_kvcaches_ptr(kvcaches=list(kv_caches.values()))
+                connector._initialize_kv_cache_pointers()
+                self._log.write(
+                    json.dumps(
+                        {
+                            "event": "packed_transfer_layout_ready",
+                            "connector": type(connector).__name__,
+                            "format": str(connector.engine_kv_format),
+                            "cpu_shapes": [
+                                list(shape)
+                                for shape in engine.metadata.get_shapes(self._chunk)
+                            ],
+                        }
+                    )
+                    + "\n"
+                )
         super().register_kv_caches(kv_caches)
         if self._exp_role == KVConnectorRole.WORKER:
             self._start_observer()

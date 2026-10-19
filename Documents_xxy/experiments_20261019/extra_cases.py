@@ -41,7 +41,47 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "natural":
+    if stage == "local_hot":
+        for local in [False, True]:
+            config = configuration("hot", [1], blocks=256)
+            config["scope"] = "controlled_hot_prefixes_GPU_KV4096_local_mechanism"
+            if local:
+                local_policy(config)
+            result.append((f"LHOT_L{int(local)}", config))
+    elif stage == "remaining":
+        for trace in ["hot_mixed", "public_coding"]:
+            if trace == "hot_mixed":
+                mixed_trace()
+            for policy in ["threshold", "work", "work_remaining", "cost_remaining"]:
+                config = configuration(trace, [2, 3])
+                config["router"] = {
+                    "policy": policy,
+                    "port": 8290,
+                    "capacity_tokens": 8192,
+                    "prefill_ms": 0.1,
+                    "decode_ms": 35,
+                }
+                result.append((f"REMAIN_{trace}_{policy}", config))
+    elif stage == "quant_natural":
+        for precision, model in [("BF16", MODEL), ("AWQ", AWQ_MODEL)]:
+            for local in [False, True]:
+                config = configuration("public_coding_8k", [1])
+                natural(config)
+                config["concurrency"] = 32
+                config["coding_quality_probes"] = True
+                config["model"] = model
+                if precision == "AWQ":
+                    config["server_args"] += ["--quantization", "auto_awq"]
+                config["server_args"] += [
+                    "--max-model-len",
+                    "8192",
+                    "--max-num-seqs",
+                    "32",
+                ]
+                if local:
+                    local_policy(config)
+                result.append((f"QNAT_{precision}_L{int(local)}", config))
+    elif stage == "natural":
         for local in [False, True]:
             config = configuration("public_coding", [3])
             natural(config)
@@ -64,8 +104,8 @@ def configurations(stage):
             config["server_args"] += [
                 "--kv-cache-dtype",
                 "fp8_e4m3",
-                "--calculate-kv-scales",
             ]
+            config["scope"] = "KV_FP8_E4M3_unit_scales_compatibility_probe"
             if local:
                 local_policy(config)
             result.append((f"V_KVFP8_fixed_L{int(local)}", config))

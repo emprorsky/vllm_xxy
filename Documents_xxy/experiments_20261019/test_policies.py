@@ -76,3 +76,23 @@ def test_eviction_penalty_avoids_destroying_a_hot_prefix():
     worker, scores = policy.choose("r", [7, 8, 9, 10], 1, now=2)
     assert worker == 1
     assert scores[0].eviction_ms > scores[1].eviction_ms
+
+
+def test_remaining_work_uses_monotonic_observed_tokens_and_releases_progress():
+    policy = PlacementPolicy(
+        2, "work_remaining", prefill_ms_per_token=1, decode_ms_per_token=10
+    )
+    policy.choose("old", [1] * 32, 10, now=1)
+    assert policy.reservations["old"] == (0, 132)
+    policy.observe_output("old", 9)
+    assert policy.reservations["old"] == (0, 10)
+    policy.observe_output("old", 3)
+    assert policy.reservations["old"] == (0, 10)
+    policy.choose("other", [2] * 32, 1, now=1)
+    worker, scores = policy.choose("new", [3] * 32, 10, now=1)
+    assert worker == 0 and scores[0].queue_ms == 10
+    policy.observe_output("old", 999)
+    assert policy.reservations["old"] == (0, 0)
+    policy.finish("old", [1] * 32, False, now=2)
+    policy.observe_output("old", 9)
+    assert "old" not in policy.output_progress

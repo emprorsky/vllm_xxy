@@ -77,6 +77,9 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
         ):
             raise HTTPException(400, "Router requires one token-ID prompt")
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        track_remaining = args.policy.endswith("_remaining")
+        if track_remaining and payload.get("n", 1) != 1:
+            raise HTTPException(400, "Remaining-work router currently requires n=1")
         try:
             worker, scores = policy.choose(
                 request_id, tokens, int(payload.get("max_tokens", 16))
@@ -132,10 +135,29 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
 
         async def stream():
             completed = False
+            emitted = 0
             try:
                 async for line in upstream.aiter_lines():
                     if line == "data: [DONE]":
                         completed = True
+                    elif track_remaining and line.startswith("data: "):
+                        try:
+                            message = json.loads(line[6:])
+                            emitted += sum(
+                                len(choice.get("token_ids") or [])
+                                for choice in message.get("choices", [])
+                            )
+                            emitted = max(
+                                emitted,
+                                (message.get("usage") or {}).get(
+                                    "completion_tokens", 0
+                                ),
+                            )
+                            policy.observe_output(request_id, emitted)
+                        except (ValueError, TypeError, AttributeError):
+                            # Preserve the upstream stream; missing token
+                            # counts leave the conservative reservation intact.
+                            pass
                     yield (line + "\n").encode()
             finally:
                 policy.finish(request_id, tokens, completed)
@@ -147,6 +169,7 @@ def create_app(args: argparse.Namespace, policy=None) -> FastAPI:
                             "event": "finish",
                             "success": completed,
                             "elapsed_s": time.monotonic() - start,
+                            "observed_output_tokens": emitted,
                         }
                     )
                     + "\n"
@@ -166,7 +189,16 @@ def main():
     parser.add_argument("--workers", nargs="+", required=True)
     parser.add_argument(
         "--policy",
-        choices=["rr", "load", "prefix", "threshold", "work", "cost"],
+        choices=[
+            "rr",
+            "load",
+            "prefix",
+            "threshold",
+            "work",
+            "cost",
+            "work_remaining",
+            "cost_remaining",
+        ],
         default="cost",
     )
     parser.add_argument("--capacity-tokens", type=int, default=8192)

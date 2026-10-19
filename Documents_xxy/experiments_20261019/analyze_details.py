@@ -91,7 +91,9 @@ def analyze(run):
                 )
                 errors.append(estimated - observed)
         result["router"] = {
-            "source": "inferred_history",
+            "source": sorted(
+                {e.get("directory_source", "unknown") for e in dispatches}
+            ),
             "dispatches": len(dispatches),
             "cost_work_argmin_disagreements_same_state": counterfactual_difference,
             "cached_tokens_mean_absolute_error": sum(abs(e) for e in errors)

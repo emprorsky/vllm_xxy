@@ -136,6 +136,104 @@ def test_adapter_sets_skip_before_base_tracker_and_freezes(monkeypatch):
     assert len(adapter._log.getvalue().splitlines()) == 1
 
 
+def test_packed_layout_rejects_v2_before_storage_registration(monkeypatch):
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
+
+    from .lmcache_adapter import LMCacheConnectorV1, WorkingSetLMCacheConnector
+
+    calls = []
+    monkeypatch.setattr(
+        LMCacheConnectorV1, "register_kv_caches", lambda *a: calls.append("storage")
+    )
+    adapter = object.__new__(WorkingSetLMCacheConnector)
+    adapter._exp_role = KVConnectorRole.WORKER
+    adapter._lmcache_engine = SimpleNamespace(
+        lmcache_engine=SimpleNamespace(gpu_connector=object())
+    )
+    with pytest.raises(ValueError, match="Packed K/V requires"):
+        adapter.register_kv_caches({"layer": SimpleNamespace(ndim=4)})
+    assert not calls
+
+
+def test_packed_layout_is_discovered_before_storage_allocates(monkeypatch):
+    from lmcache.v1.gpu_connector.gpu_connectors import VLLMPagedMemGPUConnectorV3
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
+
+    from .lmcache_adapter import LMCacheConnectorV1, WorkingSetLMCacheConnector
+
+    calls = []
+    connector = object.__new__(VLLMPagedMemGPUConnectorV3)
+    connector.initialize_kvcaches_ptr = lambda **kw: calls.append("views")
+    connector._initialize_kv_cache_pointers = lambda: calls.append("shapes")
+    connector.engine_kv_format = "packed"
+    adapter = object.__new__(WorkingSetLMCacheConnector)
+    adapter._exp_role = KVConnectorRole.WORKER
+    adapter._chunk = 256
+    adapter._log = io.StringIO()
+    adapter._start_observer = lambda: calls.append("observer")
+    adapter._lmcache_engine = SimpleNamespace(
+        lmcache_engine=SimpleNamespace(
+            gpu_connector=connector,
+            metadata=SimpleNamespace(get_shapes=lambda n: [(1, 36, n, 512)]),
+        )
+    )
+    monkeypatch.setattr(
+        LMCacheConnectorV1, "register_kv_caches", lambda *a: calls.append("storage")
+    )
+    adapter.register_kv_caches({"layer": SimpleNamespace(ndim=4)})
+    assert calls == ["views", "shapes", "storage", "observer"]
+    assert json.loads(adapter._log.getvalue())["cpu_shapes"] == [[1, 36, 256, 512]]
+
+
+def test_stream_progress_counts_token_ids_instead_of_sse_messages(tmp_path):
+    from .policies import PlacementPolicy
+
+    observed = []
+
+    class Observed(PlacementPolicy):
+        def observe_output(self, request_id, emitted_tokens):
+            observed.append(emitted_tokens)
+            super().observe_output(request_id, emitted_tokens)
+
+    args = router_args(tmp_path)
+    args.policy = "work_remaining"
+    policy = Observed(1, args.policy)
+    app = router.create_app(args, policy=policy)
+    data = (
+        'data: {"choices": [{"token_ids": [1, 2]}]}\n\n'
+        'data: {"choices": [{"token_ids": [3, 4, 5]}]}\n\n'
+        'data: {"choices": [], "usage": {"completion_tokens": 5}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    with TestClient(app) as client:
+        app.state.client = Upstream(httpx.Response(200, content=data.encode()))
+        response = client.post(
+            "/v1/completions", json={"prompt": [1] * 32, "stream": True}
+        )
+        assert response.status_code == 200
+        assert not policy.reservations and not policy.output_progress
+    assert observed == [2, 5, 5]
+    assert (
+        json.loads(args.log.read_text().splitlines()[-1])["observed_output_tokens"] == 5
+    )
+
+
+def test_code_probe_checks_execution_and_rejects_imports():
+    from .quality_coding import execute_code
+
+    tests = [([[1, 2, 3, 4]], 6), ([[]], 0)]
+    assert execute_code(
+        "def sum_even(nums):\n return sum(x for x in nums if x % 2 == 0)",
+        "sum_even",
+        tests,
+    )["passed"]
+    assert not execute_code("def sum_even(nums): return 6", "sum_even", tests)["passed"]
+    assert not execute_code(
+        "import os\ndef sum_even(nums): return 0", "sum_even", tests
+    )["passed"]
+
+
 @pytest.mark.parametrize("kind", ["router", "pd"])
 def test_cancellation_during_upstream_wait_releases_ledger(tmp_path, kind):
     import asyncio

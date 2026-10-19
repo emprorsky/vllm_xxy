@@ -246,6 +246,8 @@ class PlacementPolicy:
             "threshold",
             "work",
             "cost",
+            "work_remaining",
+            "cost_remaining",
         }:
             raise ValueError("invalid worker count or policy")
         if min(prefill_ms_per_token, decode_ms_per_token) < 0:
@@ -261,6 +263,7 @@ class PlacementPolicy:
         self.cache_threshold = cache_threshold
         self.eviction_weight = eviction_weight
         self.reservations: dict[str, tuple[int, float]] = {}
+        self.output_progress: dict[str, tuple[int, int]] = {}
         self.cursor = 0
         self.completions: deque[tuple[float, int, int]] = deque(maxlen=4096)
 
@@ -328,7 +331,7 @@ class PlacementPolicy:
                 key=lambda s: (
                     s.queue_ms
                     + s.prefill_ms
-                    + (s.eviction_ms if self.policy == "cost" else 0),
+                    + (s.eviction_ms if self.policy.startswith("cost") else 0),
                     s.worker,
                 ),
             ).worker
@@ -336,7 +339,24 @@ class PlacementPolicy:
         # The decode budget is a visible upper bound, not an oracle prediction.
         reserve = selected.prefill_ms + output_budget * self.decode_ms_per_token
         self.reservations[request_id] = (chosen, reserve)
+        if self.policy.endswith("_remaining"):
+            self.output_progress[request_id] = (output_budget, 0)
         return chosen, scores
+
+    def observe_output(self, request_id: str, emitted_tokens: int) -> None:
+        """Subtract observed output, never elapsed wall time or future output."""
+        if request_id not in self.output_progress or emitted_tokens <= 0:
+            return
+        budget, previous = self.output_progress[request_id]
+        seen = min(max(previous, emitted_tokens), budget)
+        self.output_progress[request_id] = (budget, seen)
+        worker, _ = self.reservations[request_id]
+        # A real output token proves prefill has finished. The remaining
+        # visible budget remains an upper bound when early EOS is possible.
+        self.reservations[request_id] = (
+            worker,
+            (budget - seen) * self.decode_ms_per_token,
+        )
 
     def finish(
         self,
@@ -346,6 +366,7 @@ class PlacementPolicy:
         now: float | None = None,
     ) -> None:
         reservation = self.reservations.pop(request_id, None)
+        self.output_progress.pop(request_id, None)
         if reservation is None:
             return
         now = time.monotonic() if now is None else now

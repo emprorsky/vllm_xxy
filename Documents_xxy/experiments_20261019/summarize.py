@@ -38,6 +38,13 @@ def counters(path):
 def collect(directory):
     manifest = json.loads((directory / "manifest.json").read_text())
     row = {"run": directory.name, "status": manifest["status"]}
+    environment = manifest["config"].get("env", {})
+    cpu = environment.get("LMCACHE_LOCAL_CPU", "").lower() == "true"
+    v3 = environment.get("LMCACHE_USE_GPU_CONNECTOR_V3", "").lower() == "true"
+    row["transfer_layout"] = (
+        "packed_v3" if cpu and v3 else "legacy_v2" if cpu else "none"
+    )
+    row["quarantined"] = cpu and not v3
     if manifest["status"] != "completed":
         row["error"] = manifest.get("error", "")
         return row
@@ -142,10 +149,15 @@ def summarize(root, output):
         ),
         "",
         (
-            "| 配置 | n | tok/s | TTFT P95(s) | TPOT P95(ms) |"
-            " SLO goodput(req/s) | CPU读tokens | 保存过滤 |"
+            "旧 V2 CPU offload 的打包 K/V 复制错误已确认；隔离结果不得用于收益结论。"
+            "packed_v3 为修复后重跑；completed 不代表全面质量验收。"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "",
+        (
+            "| 配置 | n | tok/s | TTFT P95(s) | TPOT P95(ms) |"
+            " SLO goodput(req/s) | CPU读tokens | 保存过滤 | CPU布局 |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     aggregate = {}
     for name, group in groups.items():
@@ -164,10 +176,15 @@ def summarize(root, output):
                 "min": min(values),
                 "max": max(values),
             }
-        aggregate[name] = {"n": len(group), "metrics": metrics}
+        aggregate[name] = {
+            "n": len(group),
+            "metrics": metrics,
+            "quarantined": any(r["quarantined"] for r in group),
+            "transfer_layout": sorted({r["transfer_layout"] for r in group}),
+        }
         med = {key: value["median"] for key, value in metrics.items()}
         lines.append(
-            f"| {name} | {len(group)} | {med['output_tok_s']:.2f} | {med['ttft_s_p95']:.3f} | {med['tpot_s_p95'] * 1000:.2f} | {med['request_goodput']:.3f} | {med['cpu_retrieved_tokens']:.0f} | {med['admission_skips']:.0f} |"  # noqa: E501
+            f"| {name} | {len(group)} | {med['output_tok_s']:.2f} | {med['ttft_s_p95']:.3f} | {med['tpot_s_p95'] * 1000:.2f} | {med['request_goodput']:.3f} | {med['cpu_retrieved_tokens']:.0f} | {med['admission_skips']:.0f} | {'隔离' if aggregate[name]['quarantined'] else ','.join(aggregate[name]['transfer_layout'])} |"  # noqa: E501
         )
     failures = [r for r in rows if r["status"] != "completed"]
     if failures:

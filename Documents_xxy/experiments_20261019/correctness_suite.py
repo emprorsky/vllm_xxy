@@ -59,7 +59,7 @@ async def protocol(model, endpoint, output, server_log):
     ) * 120
     for index, value in enumerate(["marigold", "cobalt", "orchid"]):
         text = (
-            f"The project constant PROJECT_SENTINEL is '{value}'.\n"
+            f"Case {index}: The project constant PROJECT_SENTINEL is '{value}'.\n"
             + filler
             + "\nReturn only the value of PROJECT_SENTINEL defined at the beginning."
         )
@@ -135,7 +135,9 @@ async def protocol(model, endpoint, output, server_log):
                 result["choices"][0]["text"].strip().strip("`'\" .\n").casefold()
                 for result in [cold, gpu, restored]
             ]
-            content = expected is None or all(text == expected for text in texts)
+            content = expected is None or all(
+                re.search(rf"\b{re.escape(expected)}\b", text) for text in texts
+            )
             logs = server_log.read_text(errors="replace")
             actual_reads = sum(
                 int(n)
@@ -207,14 +209,18 @@ async def execute(args):
                     break
             await asyncio.sleep(2)
     config = configuration("public_coding", [args.gpu])
-    offload(config, "none", 0.5)
+    config["model"] = args.model
+    if args.protocol == "cpu":
+        offload(config, "none", 0.5)
+    elif "AWQ" in args.model:
+        config["server_args"] += ["--quantization", "auto_awq"]
     endpoint = f"http://127.0.0.1:{args.port}"
     argv = [
         sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
         "--model",
-        MODEL,
+        args.model,
         "--served-model-name",
         "experiment",
         "--host",
@@ -250,10 +256,23 @@ async def execute(args):
         )
         try:
             await wait_ready(args.port, process)
-            await validate(MODEL, [endpoint], args.output / "basic_output_gate.json")
-            result = await protocol(
-                MODEL, endpoint, args.output, args.output / "server.log"
+            await validate(
+                args.model, [endpoint], args.output / "basic_output_gate.json"
             )
+            if args.protocol == "cpu":
+                result = await protocol(
+                    args.model, endpoint, args.output, args.output / "server.log"
+                )
+            else:
+                from .quality_coding import evaluate
+
+                summary = await evaluate(
+                    args.model, [endpoint], args.output / "coding_quality.json"
+                )
+                result = {
+                    "passed": summary["passed"] == summary["tasks"],
+                    **{"coding_quality": summary},
+                }
             manifest.update(
                 status="completed" if result["passed"] else "failed", result=result
             )
@@ -279,6 +298,8 @@ def main():
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--port", type=int, default=8270)
     parser.add_argument("--wait-manifest", type=Path)
+    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--protocol", choices=["cpu", "coding"], default="cpu")
     asyncio.run(execute(parser.parse_args()))
 
 

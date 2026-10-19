@@ -86,6 +86,7 @@ def offload(config, mode, capacity_gib):
             "LMCACHE_LOCAL_CPU": "True",
             "LMCACHE_MAX_LOCAL_CPU_SIZE": str(capacity_gib),
             "LMCACHE_CHUNK_SIZE": "256",
+            "LMCACHE_USE_GPU_CONNECTOR_V3": "True",
         }
     )
     config["server_args"] += [
