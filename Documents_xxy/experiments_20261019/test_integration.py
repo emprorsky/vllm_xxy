@@ -13,6 +13,47 @@ from . import pd_proxy, router
 from .policies import TierTelemetry, WriteAdmission
 
 
+@pytest.mark.parametrize("contents", [b"abcd", b"ab", None])
+def test_disk_probe_only_accepts_complete_payload(tmp_path, contents):
+    """A missing/short file cannot turn old CPU staging bytes into valid KV."""
+    import threading
+
+    from .disk_adapter import DiskWorkingSetLMCacheConnector
+
+    class LocalDiskBackend:
+        use_odirect = False
+        max_cache_size = 1024
+        remove = staticmethod(lambda key, force=True: False)
+        write_file = staticmethod(lambda buffer, path: None)
+
+    disk = LocalDiskBackend()
+    connector = DiskWorkingSetLMCacheConnector.__new__(DiskWorkingSetLMCacheConnector)
+    connector._observer_started = False
+    connector._lmcache_engine = SimpleNamespace(
+        lmcache_engine=SimpleNamespace(
+            storage_manager=SimpleNamespace(storage_backends={"disk": disk})
+        )
+    )
+    connector._capacity = 1024
+    connector._telemetry_path = tmp_path / "cpu-test.json"
+    connector._log = io.StringIO()
+    connector._stop_event = threading.Event()
+    connector._stop_event.set()
+    connector._start_observer()
+    path = tmp_path / "payload"
+    if contents is not None:
+        path.write_bytes(contents)
+    buffer = bytearray(b"xxxx")
+    if contents == b"abcd":
+        disk.read_file("key", buffer, path)
+        assert bytes(buffer) == contents
+        assert json.loads(connector._log.getvalue())["bytes"] == 4
+    else:
+        with pytest.raises((EOFError, FileNotFoundError)):
+            disk.read_file("key", buffer, path)
+        assert not connector._log.getvalue()
+
+
 class BrokenStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         raise httpx.ReadError("injected response failure")

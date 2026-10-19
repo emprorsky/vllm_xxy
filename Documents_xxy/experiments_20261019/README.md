@@ -80,3 +80,38 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /root/miniconda3/envs/vllm-dev/bin/python -m py
 - PD proxy 保留 `experiment.*` 会话信息和可选 `lmcache.skip_save`，远端 KV 元数据仍以 P 响应为准。
 - `admission_optional_in_multi=True` 仅允许 LMCache 自己的 PD 模式关闭时使用，区分 CPU 可选保存和 NIXL 必需交接。MultiConnector 仍使用现成加载选择，NIXL 在前；联合路径必须完成 HND/PD 模型验收后才报告性能。
 - `status_snapshot.py --interval 20` 生成 outputs 下的 `status.md/status.json`。独立对照使用 `CONF_`，新任务验证集使用 `VALID_`；不根据验证集结果继续选参。
+
+### 后续验收与证据导出
+
+`case_runner --stages graph` 将相同固定 KV 容量、native RMSNorm/Triton 的
+L0/L1 分别置于 eager 与 FULL_DECODE_ONLY graph 中；保留代码生成门禁，不能把
+Graph 本身的收益当作自研调度收益。`holdout_memory` 使用事先固定的另32个任务，
+验证 FIFO 批处理槽位/KV预算近似；不依据这些验证结果重新选系数。
+`rr_reference` 补简单参照，主对照仍为 cache/load threshold。
+
+`chunk_diagnostic` 使用独立 `PrefillProbeScheduler` 记录调度前的computed位置、
+每请求安排的prefill tokens和剩余输入；日志存在开销，该组只作分块机制证据，
+不替代此前正常scheduler的性能结果。
+
+`DiskWorkingSetLMCacheConnector` 将同一写入准入扩展到本地持久文件层：
+CPU暂存0.125GiB、磁盘1GiB，负载上限1024tokens。策略只使用文件层容量和真实
+已发布驻留/容量淘汰，不将CPU重复副本相加。文件读取检查完整长度，缺失/短读
+不能使用旧暂存字节；读写字节与耗时分别记录。普通文件IO可能命中OS页缓存，
+不能将它解释成NAND计时。各run有独立缓存目录，原始缓存不跨组复用。
+先运行 `correctness_suite --storage-tier disk`，让噪声请求实际保存并挤出CPU，
+要求11项数值/内容门禁和每项真实文件读取全部通过；之后才运行 `--stages disk`。
+
+INT8 KV单卡代码探测通过，但CPU恢复中4/11项超过原先冻结的概率门限。
+字节复制通过不等于模型路径数值已验收；INT8 offload性能运行被required_checks
+阻止，不纳入收益结论。BF16 CPU路径已单独通过11项。
+
+导出显式对照表（含每轮值、配对变化、读写/命中/抢占计数）：
+
+```bash
+/root/miniconda3/envs/vllm-dev/bin/python -m Documents_xxy.experiments_20261019.evidence \
+  --root /root/autodl-tmp/outputs/kv_aware_20261019/runs \
+  --output /root/autodl-tmp/outputs/kv_aware_20261019/summary
+```
+
+`status_snapshot` 自动发现CPU/磁盘/量化等正确性manifest，页面上保留旧失败记录。
+截至本次追加，策略、故障清理、PD元数据、事件目录和文件完整读取共36项测试通过。

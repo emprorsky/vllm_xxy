@@ -223,6 +223,7 @@ class PlacementScore:
     outstanding_private_tokens_est: int = 0
     outstanding_shared_tokens_est: int = 0
     max_batch_slots: int = 0
+    serial_queue_ms: float = 0
 
 
 @dataclass(frozen=True)
@@ -339,6 +340,7 @@ class PlacementPolicy:
                 * self.eviction_weight
             )
             queue = sum(outstanding)
+            serial_queue = queue
             if self.policy == "memory_remaining":
                 size = directory.block_size
                 private = (
@@ -378,6 +380,7 @@ class PlacementPolicy:
                     if self.policy == "memory_remaining"
                     else 0,
                     self.max_batch if self.policy == "memory_remaining" else 0,
+                    serial_queue,
                 )
             )
         least = min(scores, key=lambda s: (s.inflight, s.worker))

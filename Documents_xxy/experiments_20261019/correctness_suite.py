@@ -39,7 +39,7 @@ def difference(left, right):
     }
 
 
-async def protocol(model, endpoint, output, server_log):
+async def protocol(model, endpoint, output, server_log, storage_tier="cpu"):
     tokenizer = AutoTokenizer.from_pretrained(model, local_files_only=True)
     rows = [
         json.loads(x)
@@ -88,6 +88,15 @@ async def protocol(model, endpoint, output, server_log):
             "not full quality evaluation"
         ),
     }
+    if storage_tier == "disk":
+        specification.update(
+            noise_skip_save=False,
+            required_actual_disk_read=True,
+            CPU_staging_GiB=0.125,
+            persistent_disk_GiB=1.0,
+            max_tokens_per_load=1024,
+            file_IO_scope="buffered_reads_include_OS_page_cache",
+        )
     (output / "specification.json").write_text(json.dumps(specification, indent=2))
     async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
 
@@ -120,9 +129,23 @@ async def protocol(model, endpoint, output, server_log):
                 # noise exceeds 8192 GPU slots; no optional CPU writes happen.
                 noise = [2000 + case_index * 16 + index] * 16 + noise_base[16:]
                 await query(
-                    noise, f"proof-{name}-noise-{index}", skip=True, logprobs=False
+                    noise,
+                    f"proof-{name}-noise-{index}",
+                    skip=storage_tier != "disk",
+                    logprobs=False,
                 )
+
+            def disk_bytes():
+                return sum(
+                    row.get("bytes", 0)
+                    for path in (output / "admission").glob("admission-*.jsonl")
+                    for line in path.read_text().splitlines()
+                    if (row := json.loads(line)).get("event") == "disk_read"
+                )
+
+            before_disk = disk_bytes() if storage_tier == "disk" else 0
             restored = await query(tokens, f"proof-{name}-restored", budget=budget)
+            actual_disk = disk_bytes() - before_disk if storage_tier == "disk" else 0
             baseline = difference(cold, gpu)
             comparison = difference(cold, restored)
             limit = max(0.3, 2 * (baseline["max_shared_logprob_delta"] or 0))
@@ -159,6 +182,7 @@ async def protocol(model, endpoint, output, server_log):
                 "numerical_gate": numeric,
                 "content_gate": content,
                 "cpu_retrieved_tokens": actual_reads,
+                "disk_read_bytes": actual_disk,
                 "cold": cold,
                 "gpu": gpu,
                 "restored": restored,
@@ -182,7 +206,10 @@ async def protocol(model, endpoint, output, server_log):
                 flush=True,
             )
     passed = all(
-        r["numerical_gate"] and r["content_gate"] and r["cpu_retrieved_tokens"] > 0
+        r["numerical_gate"]
+        and r["content_gate"]
+        and r["cpu_retrieved_tokens"] > 0
+        and (storage_tier != "disk" or r["disk_read_bytes"] > 0)
         for r in records
     )
     return {
@@ -193,6 +220,12 @@ async def protocol(model, endpoint, output, server_log):
         "failed_content": [r["name"] for r in records if not r["content_gate"]],
         "missing_cpu_reads": [
             r["name"] for r in records if not r["cpu_retrieved_tokens"]
+        ],
+        "storage_tier": storage_tier,
+        "missing_disk_reads": [
+            r["name"]
+            for r in records
+            if storage_tier == "disk" and not r["disk_read_bytes"]
         ],
     }
 
@@ -211,7 +244,12 @@ async def execute(args):
     config = configuration("public_coding", [args.gpu])
     config["model"] = args.model
     if args.protocol == "cpu":
-        offload(config, "none", 0.5)
+        if args.storage_tier == "disk":
+            from .extra_cases import disk_offload
+
+            disk_offload(config, "none", args.output.resolve() / "disk-cache")
+        else:
+            offload(config, "none", 0.5)
     elif "AWQ" in args.model:
         config["server_args"] += ["--quantization", "auto_awq"]
     if args.kv_cache_dtype:
@@ -243,6 +281,7 @@ async def execute(args):
     }
     if args.kv_cache_layout:
         env["VLLM_KV_CACHE_LAYOUT"] = args.kv_cache_layout
+        config["env"]["VLLM_KV_CACHE_LAYOUT"] = args.kv_cache_layout
     manifest = {
         "status": "starting",
         "started_at": time.time(),
@@ -265,7 +304,11 @@ async def execute(args):
             )
             if args.protocol == "cpu":
                 result = await protocol(
-                    args.model, endpoint, args.output, args.output / "server.log"
+                    args.model,
+                    endpoint,
+                    args.output,
+                    args.output / "server.log",
+                    storage_tier=args.storage_tier,
                 )
             elif args.protocol == "profile":
                 from .calibration import calibrate
@@ -309,6 +352,7 @@ def main():
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--kv-cache-dtype")
     parser.add_argument("--kv-cache-layout")
+    parser.add_argument("--storage-tier", choices=["cpu", "disk"], default="cpu")
     parser.add_argument(
         "--protocol", choices=["cpu", "coding", "profile"], default="cpu"
     )

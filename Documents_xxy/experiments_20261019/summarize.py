@@ -100,6 +100,7 @@ def collect(directory):
     )
     decisions = []
     eviction_chunks = 0
+    disk_io = Counter()
     for path in (directory / "admission").glob("*.jsonl"):
         for line in path.read_text().splitlines():
             event = json.loads(line)
@@ -107,10 +108,16 @@ def collect(directory):
                 decisions.append(event)
             elif event.get("event") == "capacity_eviction":
                 eviction_chunks += event["removed_chunks"]
+            elif event.get("event") in {"disk_read", "disk_write"}:
+                kind = event["event"]
+                disk_io[kind + "_bytes"] += event["bytes"]
+                disk_io[kind + "_calls"] += 1
+                disk_io[kind + "_seconds_sum"] += event["elapsed_s"]
     row["admission_decisions"] = len(decisions)
     row["admission_skips"] = sum(not e["save"] for e in decisions)
     row["admission_pressure"] = sum(e["pressure"] for e in decisions)
     row["cpu_eviction_chunks_observed"] = eviction_chunks
+    row.update(disk_io)
     path = directory / "router_decisions.jsonl"
     if path.exists():
         events = [json.loads(x) for x in path.read_text().splitlines()]

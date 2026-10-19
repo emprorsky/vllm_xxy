@@ -43,6 +43,8 @@ async def run(args):
     if args.output.exists():
         raise FileExistsError(f"run directory already exists: {args.output}")
     args.output.mkdir(parents=True)
+    if config.get("env", {}).get("LMCACHE_LOCAL_DISK") == "__PER_RUN_DISK_CACHE__":
+        config["env"]["LMCACHE_LOCAL_DISK"] = str(args.output.resolve() / "disk-cache")
     process_list = []
     handles = []
     env = os.environ.copy()

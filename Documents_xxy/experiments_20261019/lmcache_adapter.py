@@ -86,7 +86,11 @@ class WorkingSetLMCacheConnector(LMCacheConnectorV1):
         elif vllm_config.cache_config.cache_dtype not in {"auto", "bfloat16"}:
             raise ValueError("Non-BF16 KV payload accounting requires cache specs")
         self._chunk = int(extra.get("admission_chunk_tokens", 256))
-        self._capacity = int(extra.get("admission_cpu_bytes", 1024**3))
+        self._capacity = int(
+            extra.get(
+                "admission_capacity_bytes", extra.get("admission_cpu_bytes", 1024**3)
+            )
+        )
         self._admission = WriteAdmission(
             self._capacity,
             self._kv_bytes,

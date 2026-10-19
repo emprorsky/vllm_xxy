@@ -74,6 +74,7 @@ def analyze(run):
         dispatches = [e for e in events if e.get("event") == "dispatch"]
         errors = []
         latency_errors = []
+        serial_latency_errors = []
         counterfactual_difference = 0
         for event in dispatches:
             scores = event["scores"]
@@ -95,6 +96,11 @@ def analyze(run):
                 if row.get("ttft_s") is not None:
                     prediction = (selected["queue_ms"] + selected["prefill_ms"]) / 1000
                     latency_errors.append(prediction - row["ttft_s"])
+                    if "serial_queue_ms" in selected:
+                        serial_prediction = (
+                            selected["serial_queue_ms"] + selected["prefill_ms"]
+                        ) / 1000
+                        serial_latency_errors.append(serial_prediction - row["ttft_s"])
         result["router"] = {
             "source": sorted(
                 {e.get("directory_source", "unknown") for e in dispatches}
@@ -122,6 +128,12 @@ def analyze(run):
                 )
                 for q in [50, 95, 99]
             },
+            "same_dispatch_same_worker_serial_shadow_ttft_mae_s": sum(
+                abs(e) for e in serial_latency_errors
+            )
+            / len(serial_latency_errors)
+            if serial_latency_errors
+            else None,
         }
         result["pd_pairs"] = dict(
             Counter(

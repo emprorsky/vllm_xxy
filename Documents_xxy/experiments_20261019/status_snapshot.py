@@ -40,11 +40,15 @@ def snapshot(root):
             }
         )
     checks = {}
-    for name in ["cpu_prefix_fidelity_v3_long", "quality_bf16", "quality_awq"]:
-        path = root / "checks" / name / "manifest.json"
-        if path.exists():
+    check_paths = sorted((root / "checks").glob("*/manifest.json"))
+    check_paths += sorted((root / "checks").glob("*.manifest.json"))
+    for path in check_paths:
+        try:
             value = json.loads(path.read_text())
-            checks[name] = value.get("result", value.get("status"))
+        except (OSError, ValueError):
+            continue
+        name = path.parent.name if path.name == "manifest.json" else path.stem
+        checks[name] = {"status": value["status"], "result": value.get("result")}
     result = {
         "timestamp_utc": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
         "run_counts": dict(counts),
@@ -68,9 +72,12 @@ def snapshot(root):
             f"{row['completed_responses']}/{row['expected_responses']} | "
             f"{row['elapsed_s']} |"
         )
+    lines += ["", "| 正确性检查 | 状态 | 通过 |", "|---|---|---|"]
+    for name, check in checks.items():
+        passed = (check["result"] or {}).get("passed", "—")
+        lines.append(f"| {name} | {check['status']} | {passed} |")
     lines += [
         "",
-        "CPU V3 恢复与 BF16/AWQ 小规模代码探测状态见 status.json。",
         "旧 V2 offload 性能结果隔离；单轮差异不作为稳定收益。",
     ]
     (root / "status.md").write_text("\n".join(lines) + "\n")

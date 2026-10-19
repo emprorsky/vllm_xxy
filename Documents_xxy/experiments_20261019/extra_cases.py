@@ -21,6 +21,25 @@ def natural(config):
     config["scope"] = "natural_GPU_KV_profile_same_memory_utilization"
 
 
+def disk_offload(config, mode, path):
+    offload(config, mode, 0.125)
+    config["env"].update(
+        LMCACHE_LOCAL_DISK=str(path), LMCACHE_MAX_LOCAL_DISK_SIZE="1.0"
+    )
+    index = config["server_args"].index("--kv-transfer-config")
+    transfer = json.loads(config["server_args"][index + 1])
+    transfer["kv_connector"] = "DiskWorkingSetLMCacheConnector"
+    transfer["kv_connector_module_path"] = (
+        "Documents_xxy.experiments_20261019.disk_adapter"
+    )
+    extra = transfer["kv_connector_extra_config"]
+    del extra["admission_cpu_bytes"]
+    extra["admission_capacity_bytes"] = 1024**3
+    extra["lmcache.max_tokens_per_load"] = 1024
+    config["server_args"][index + 1] = json.dumps(transfer)
+    config["scope"] = "persistent_disk_1GiB_CPU_staging_0p125GiB_load_cap1024"
+
+
 def mixed_trace():
     original = ROOT / "traces/hot.jsonl"
     path = ROOT / "traces/hot_mixed.jsonl"
@@ -42,7 +61,87 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "pd_cpu":
+    if stage == "disk":
+        for mode in ["none", "conditioned"]:
+            config = configuration("public_coding", [0])
+            # Runner substitutes a unique per-run path before server startup.
+            disk_offload(config, mode, "__PER_RUN_DISK_CACHE__")
+            config["required_checks"] = [
+                str(ROOT / "checks/disk_prefix_fidelity/manifest.json")
+            ]
+            result.append((f"DISK_{mode}", config))
+    elif stage == "chunk_diagnostic":
+        for budget, enabled, local in [
+            (512, True, False),
+            (512, True, True),
+            (2048, True, False),
+            (2048, True, True),
+            (8192, False, False),
+            (8192, True, False),
+        ]:
+            config = configuration("public_coding", [0], budget=budget)
+            config["server_args"] += [
+                "--scheduler-cls",
+                "Documents_xxy.experiments_20261019.schedule_probe.PrefillProbeScheduler",
+                "--enable-chunked-prefill"
+                if enabled
+                else "--no-enable-chunked-prefill",
+            ]
+            if local:
+                local_policy(config)
+            config["scope"] = "diagnostic_schedule_logging_overhead_not_performance"
+            result.append((f"CHDIAG_{budget}_C{int(enabled)}_L{int(local)}", config))
+    elif stage == "graph":
+        for execution in ["eager", "graph"]:
+            for local in [False, True]:
+                config = configuration("public_coding", [0])
+                if execution == "graph":
+                    config["server_args"].remove("--enforce-eager")
+                    index = config["server_args"].index("--compilation-config")
+                    config["server_args"][index + 1] = json.dumps(
+                        {
+                            "mode": 0,
+                            "cudagraph_mode": "FULL_DECODE_ONLY",
+                            "cudagraph_capture_sizes": [1, 2, 4, 8],
+                            "custom_ops": ["none"],
+                        }
+                    )
+                if local:
+                    local_policy(config)
+                config["coding_quality_probes"] = True
+                config["scope"] = "fixed_KV8192_native_RMS_Triton_decode_graph_C16"
+                result.append((f"GRAPH_{execution}_L{int(local)}", config))
+    elif stage == "holdout_memory":
+        for trace, blocks, context in [
+            ("holdout_coding", 512, 4096),
+            ("holdout_coding_8k", 1152, 8192),
+        ]:
+            for policy in ["threshold", "memory_remaining"]:
+                config = configuration(trace, [2, 3], blocks=blocks)
+                config["server_args"] += ["--max-model-len", str(context)]
+                config["router"] = {
+                    "policy": policy,
+                    "port": 8290,
+                    "capacity_tokens": blocks * 16,
+                    "prefill_ms": 0.1,
+                    "decode_ms": 35,
+                    "max_batch": 8,
+                }
+                config["scope"] = "disjoint_validation_frozen_FIFO_KV_queue_proxy"
+                result.append((f"HOLDMEM_{trace}_{policy}", config))
+    elif stage == "rr_reference":
+        for trace in ["hot", "public_coding"]:
+            config = configuration(trace, [2, 3])
+            config["router"] = {
+                "policy": "rr",
+                "port": 8290,
+                "capacity_tokens": 8192,
+                "prefill_ms": 0.1,
+                "decode_ms": 35,
+            }
+            config["scope"] = "simple_RR_reference_not_primary_baseline"
+            result.append((f"RRREF_{trace}", config))
+    elif stage == "pd_cpu":
         for mode in ["off", "none", "conditioned"]:
             config = configuration("public_coding", [2, 3])
             disaggregate(config, 1)
@@ -415,6 +514,11 @@ def main():
             "kvint8_offload",
             "pd_layout",
             "pd_cpu",
+            "graph",
+            "holdout_memory",
+            "rr_reference",
+            "chunk_diagnostic",
+            "disk",
         ],
         required=True,
     )

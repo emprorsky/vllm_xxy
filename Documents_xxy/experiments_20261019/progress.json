@@ -1,37 +1,34 @@
 {
-  "stage": "CPU布局修复通过；O/R/L/量化独立复验与改进路由筛选",
+  "updated_utc": "2026-10-19 02:17:23 UTC",
+  "stage": "重复验证、独立任务验证、PD组合与Graph/磁盘机制验收",
   "status": "running",
-  "completed_runs": 62,
-  "successful_responses": 6976,
+  "completed_runs": 171,
+  "successful_responses": 20438,
+  "live_status": "/root/autodl-tmp/outputs/kv_aware_20261019/status.md",
+  "evidence": "/root/autodl-tmp/outputs/kv_aware_20261019/summary/evidence.md",
   "completed": [
-    "四卡环境、3B BF16/AWQ模型和native/Triton工作路径",
-    "本地L、路由R、条件化CPU保存O、事件+完成确认目录代码",
-    "公开Coding轨迹32任务112调用及8K版本176调用",
-    "单卡、CPU容量、双副本R/O/L、事件目录与混合输出预算首轮",
-    "1P1D/2P2D/1P2D/2P1D及同资源2/3/4副本首轮",
-    "Chunk budget/开关、自然GPU容量、AWQ敏感性首轮",
-    "20项原型测试、31项已有调度回归",
-    "配置/源码哈希、逐请求指标、原始日志与CSV/JSON/Markdown汇总",
-    "CPU打包KV复制根因定位与V3提前初始化修复",
-    "逐元素复制检查与11个模型级恢复探测通过",
-    "新增测试25项通过",
-    "BF16/AWQ各6个非强制代码生成执行检查通过",
-    "原路由三轮：work/cost未稳定超过threshold，已保留负结果"
+    "CPU打包KV布局修复、20项字节复制测试、BF16模型级11项CPU恢复通过",
+    "CPU保存原任务/独立32任务各三轮，吞吐均约+3.6%",
+    "本地调度自然容量BF16/AWQ各三轮，BF16吞吐+33.8%，明确TTFT代价",
+    "旧路由与remaining路由三轮，独立吞吐增量未超过波动",
+    "CPU容量不足/充足及8K上下文修复后重跑",
+    "1P1D/2P2D/1P2D/2P1D和同资源副本首轮、chunk与量化敏感性",
+    "新增36项策略/adapter/事件/清理测试通过；原调度31项回归此前通过"
   ],
   "running": [
-    "GPU0：修复后offload四格三轮",
-    "GPU1：热点L三轮，随后自然容量/量化三轮与CPU容量/长轨迹",
-    "GPU2/3：剩余工作路由筛选，随后修复后R/O/L五格三轮"
-  ],
-  "pending": [
-    "核心对照独立复验完成",
-    "改进路由筛选后复验",
-    "容量/长轨迹修复后重跑",
-    "最终归因与报告"
+    "GPU0 Graph/eager对照→GPU0/1 PD布局与可选CPU组合→GPU0 chunk轮次诊断",
+    "GPU1 独立任务本地调度→aging三轮→PD组合→磁盘恢复验收与三轮",
+    "GPU2/3 R/O/L五格三轮→内存批处理路由三轮→独立任务及RR参照"
   ],
   "blockers": [
     "旧V2 offload数据永久隔离",
-    "Triton FP8 KV在SM86上不受支持",
-    "默认预编译自定义CUDA算子异常，统一native/Triton/eager"
+    "INT8 CPU恢复4/11超过固定概率门限，已阻止性能运行",
+    "Triton FP8 KV不支持SM86",
+    "默认预编译算子异常；主结果限定native RMSNorm/Triton/eager"
+  ],
+  "pending": [
+    "完成所有已排队运行",
+    "对照机制归因和图表",
+    "最终报告与项目描述"
   ]
 }

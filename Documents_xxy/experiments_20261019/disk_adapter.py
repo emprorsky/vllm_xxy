@@ -1,0 +1,117 @@
+"""Persistent-tier admission with bounded CPU staging and measured file I/O.
+
+CPU and disk copies overlap: only persistent disk capacity enters the policy.
+Buffered file I/O may be served by the OS page cache; this is not a NAND timer.
+"""
+
+import json
+import os
+import threading
+import time
+from collections import deque
+from dataclasses import asdict
+
+from .lmcache_adapter import WorkingSetLMCacheConnector
+from .policies import TierTelemetry
+
+
+class DiskWorkingSetLMCacheConnector(WorkingSetLMCacheConnector):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._telemetry_path = self._telemetry_path.with_name(
+            self._telemetry_path.name.replace("cpu-", "disk-")
+        )
+
+    def _start_observer(self):
+        if self._observer_started:
+            return
+        engine = getattr(self._lmcache_engine, "lmcache_engine", None)
+        manager = getattr(engine, "storage_manager", None)
+        backends = getattr(manager, "storage_backends", {})
+        disk = next(
+            (b for b in backends.values() if type(b).__name__ == "LocalDiskBackend"),
+            None,
+        )
+        if disk is None:
+            self._log.write(json.dumps({"event": "disk_telemetry_unavailable"}) + "\n")
+            return
+        if disk.use_odirect or disk.max_cache_size != self._capacity:
+            raise ValueError("Disk probe requires buffered I/O and exact capacity")
+        self._telemetry_path = self._telemetry_path.with_name(
+            self._telemetry_path.name.replace("cpu-", "disk-")
+        )
+        evictions = deque()
+        original_remove = disk.remove
+        original_write = disk.write_file
+
+        def remove(key, force=True):
+            removed = original_remove(key, force=force)
+            if removed and not force:
+                evictions.append(time.monotonic())
+                self._log.write(
+                    json.dumps({"event": "capacity_eviction", "removed_chunks": 1})
+                    + "\n"
+                )
+            return removed
+
+        def write(buffer, path):
+            start = time.monotonic()
+            result = original_write(buffer, path)
+            self._log.write(
+                json.dumps(
+                    {
+                        "event": "disk_write",
+                        "bytes": len(buffer),
+                        "elapsed_s": time.monotonic() - start,
+                        "timestamp": time.time(),
+                    }
+                )
+                + "\n"
+            )
+            return result
+
+        def read(key, buffer, path):
+            # A short or missing read must never leave stale staging bytes usable.
+            start = time.monotonic()
+            with open(path, "rb", buffering=0) as source:
+                count = source.readinto(buffer)
+            if count != len(buffer):
+                raise EOFError(f"KV file read {count}/{len(buffer)} bytes")
+            self._log.write(
+                json.dumps(
+                    {
+                        "event": "disk_read",
+                        "bytes": count,
+                        "elapsed_s": time.monotonic() - start,
+                        "timestamp": time.time(),
+                    }
+                )
+                + "\n"
+            )
+
+        disk.remove, disk.write_file, disk.read_file = remove, write, read
+        self._observer_started = True
+
+        def observe():
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                while evictions and evictions[0] < now - 60:
+                    evictions.popleft()
+                with disk.disk_lock:
+                    resident = len(disk.dict)
+                value = asdict(
+                    TierTelemetry(
+                        resident,
+                        max(self._capacity // (self._kv_bytes * self._chunk), 1),
+                        len(evictions),
+                        now,
+                    )
+                )
+                temporary = self._telemetry_path.with_suffix(f".{os.getpid()}.tmp")
+                temporary.write_text(json.dumps(value))
+                temporary.replace(self._telemetry_path)
+                self._stop_event.wait(0.5)
+
+        threading.Thread(
+            target=observe, daemon=True, name="kvexp-disk-observer"
+        ).start()
