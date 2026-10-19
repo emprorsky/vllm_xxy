@@ -90,6 +90,7 @@ def configurations(stage):
                 str(ROOT / "checks/cpu_prefix_fidelity_int8_aligned256/manifest.json"),
             ]
             config["scope"] = "INT8_GPU_CPU_granularity256_KV8192_CPU0p5_seq2"
+            config["coding_quality_probes"] = True
             result.append((f"KVINT8A_{mode}", config))
     elif stage == "disk_final":
         for name, config in configurations("disk"):

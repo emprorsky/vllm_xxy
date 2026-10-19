@@ -119,6 +119,24 @@ def main():
     ]
     panels += [
         (
+            "graph_router_confirm",
+            [
+                f"CONF_GRAPHR_{p}"
+                for p in ["threshold", "work_remaining", "memory_remaining"]
+            ],
+            "Decode graphs: threshold, serial remaining work, FIFO batch/KV model",
+        ),
+        (
+            "int8_aligned_screen",
+            [f"SCREEN_KVINT8A_{p}" for p in ["none", "conditioned"]],
+            "INT8 CPU admission screen: matched GPU block / host chunk 256",
+        ),
+        (
+            "pd_cpu2_screen",
+            [f"SCREEN_PDCPU2_{p}" for p in ["none", "conditioned"]],
+            "2P2D: mandatory NIXL plus optional CPU admission, 1GiB total host KV",
+        ),
+        (
             "architecture_final",
             ["CONF_ARCH_replica4", "CONF_ARCH_2P2D_rr", "CONF_ARCH_2P2D_work"],
             "Four GPUs: full replicas vs pair-validated 2P2D",

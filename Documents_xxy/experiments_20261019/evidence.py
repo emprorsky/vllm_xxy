@@ -189,7 +189,14 @@ def export(root, output):
     lines += [
         "",
         "每轮原始数值、读写计数、命中率、抢占数和运行名称见 evidence.json。",
-        "旧 V2 offload 结果不参与此表；INT8 CPU 恢复未通过固定门限，性能运行被阻止。",
+        (
+            "旧 V2 offload 结果不参与此表；原 block16 INT8 CPU 恢复未过门限，"
+            "相关性能被阻止。"
+        ),
+        (
+            "INT8 对齐筛选另用 GPU block256 / LMCache chunk256，11项恢复检查通过；"
+            "不能覆盖原失败或跨精度归因。"
+        ),
     ]
     (output / "evidence.md").write_text("\n".join(lines) + "\n")
     return results

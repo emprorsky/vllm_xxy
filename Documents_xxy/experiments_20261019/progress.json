@@ -1,9 +1,9 @@
 {
-  "updated_utc": "2026-10-19 02:17:23 UTC",
-  "stage": "重复验证、独立任务验证、PD组合与Graph/磁盘机制验收",
+  "updated_utc": "2026-10-19 03:50 UTC",
+  "stage": "主线及独立验证已完成；Graph/文件层正式三轮与四卡最终验收",
   "status": "running",
-  "completed_runs": 171,
-  "successful_responses": 20438,
+  "completed_runs": 257,
+  "successful_responses": 31672,
   "live_status": "/root/autodl-tmp/outputs/kv_aware_20261019/status.md",
   "evidence": "/root/autodl-tmp/outputs/kv_aware_20261019/summary/evidence.md",
   "completed": [
@@ -13,22 +13,31 @@
     "旧路由与remaining路由三轮，独立吞吐增量未超过波动",
     "CPU容量不足/充足及8K上下文修复后重跑",
     "1P1D/2P2D/1P2D/2P1D和同资源副本首轮、chunk与量化敏感性",
-    "新增36项策略/adapter/事件/清理测试通过；原调度31项回归此前通过"
+    "新增36项策略/adapter/事件/清理测试通过；原调度31项回归此前通过",
+    "文件层三轮+2.37%/TTFT -5.33%，哈希与边界恢复门禁通过",
+    "Graph本地/CPU/路由三轮完成，路由独立模型增量小",
+    "对齐INT8恢复11/11与代码6/6通过，单轮性能筛选完成"
   ],
   "running": [
-    "GPU0 Graph/eager对照→GPU0/1 PD布局与可选CPU组合→GPU0 chunk轮次诊断",
-    "GPU1 独立任务本地调度→aging三轮→PD组合→磁盘恢复验收与三轮",
-    "GPU2/3 R/O/L五格三轮→内存批处理路由三轮→独立任务及RR参照"
+    "GPU0/1 布局完整副本对照",
+    "全四卡 架构三轮→2P2D CPU迁移筛选"
   ],
   "blockers": [
-    "旧V2 offload数据永久隔离",
-    "INT8 CPU恢复4/11超过固定概率门限，已阻止性能运行",
-    "Triton FP8 KV不支持SM86",
-    "默认预编译算子异常；主结果限定native RMSNorm/Triton/eager"
+    "旧V2、端口污染配对、文件开发轮均保留并隔离",
+    "原block16 INT8恢复未过；对齐256路径已过11项",
+    "FP8 Triton受SM86限制",
+    "默认预编译算子异常；工作路径native RMSNorm/Triton，eager与decode Graph分别统计"
   ],
   "pending": [
     "完成所有已排队运行",
     "对照机制归因和图表",
     "最终报告与项目描述"
-  ]
+  ],
+  "targeted_tests_passed": 43,
+  "analyzable_completed_runs": 237,
+  "response_count_scope": "HTTP successful responses including retained isolated runs; not a model accuracy score",
+  "interview_deadline_beijing": "2026-10-19 20:00",
+  "delivery_hard_deadline_beijing": "2026-10-19 14:00",
+  "delivery_target_beijing": "2026-10-19 13:00",
+  "scope_frozen": "Finish queued key repetitions and architecture gates; no new research matrices"
 }
