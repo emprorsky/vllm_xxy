@@ -207,6 +207,57 @@ def main():
             "Three GPUs: P/D ratio and full replicas",
         ),
     ]
+    panels += [
+        (
+            "fairness_confirm",
+            ["CONF_FAIR_L0", "CONF_FAIR_L1_age10", "CONF_FAIR_L1_age5"],
+            "8K, C32: cache affinity with different aging cutoffs",
+        ),
+        (
+            "graph_local_confirm",
+            ["CONF_GRAPHN_L0", "CONF_GRAPHN_L1"],
+            "Decode CUDA graphs: local policy, natural KV capacity, C32",
+        ),
+        (
+            "graph_cpu_confirm",
+            [f"CONF_GRAPHO_{m}" for m in ["off", "none", "conditioned"]],
+            "Decode CUDA graphs: corrected CPU admission, fixed capacity",
+        ),
+        (
+            "disk_confirm",
+            ["V3_DISK_none", "V3_DISK_conditioned"],
+            "Buffered file KV: persistent tier 1GiB, CPU staging 0.125GiB",
+        ),
+        (
+            "pd_layout_screen",
+            [n for n in aggregate if n.startswith("SCREEN_PDLAYOUT_")],
+            "Existing layouts: PD vs full replicas, transfer/attention control",
+        ),
+        (
+            "pd_cpu_screen",
+            [n for n in aggregate if n.startswith("SCREEN_PDCPU_")],
+            "Mandatory NIXL handoff plus optional CPU write admission",
+        ),
+    ]
+    for trace in ["public_coding", "public_coding_8k"]:
+        panels.append(
+            (
+                "memory_confirm_" + trace,
+                [f"CONF_MEMORY_{trace}_{p}" for p in ["threshold", "memory_remaining"]],
+                "FIFO batch/KV queue approximation: " + trace,
+            )
+        )
+    for trace in ["holdout_coding", "holdout_coding_8k"]:
+        panels.append(
+            (
+                "holdout_memory_" + trace,
+                [
+                    f"VALID_HOLDMEM_{trace}_{p}"
+                    for p in ["threshold", "memory_remaining"]
+                ],
+                "Disjoint tasks, frozen FIFO batch/KV queue approximation: " + trace,
+            )
+        )
     for name, selected, title in panels:
         comparison(aggregate, selected, title, args.output / name)
     print(f"Figures exported to {args.output}")

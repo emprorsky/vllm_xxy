@@ -40,6 +40,19 @@ def disk_offload(config, mode, path):
     config["scope"] = "persistent_disk_1GiB_CPU_staging_0p125GiB_load_cap1024"
 
 
+def decode_graph(config, sizes=(1, 2, 4, 8)):
+    config["server_args"].remove("--enforce-eager")
+    index = config["server_args"].index("--compilation-config")
+    config["server_args"][index + 1] = json.dumps(
+        {
+            "mode": 0,
+            "cudagraph_mode": "FULL_DECODE_ONLY",
+            "cudagraph_capture_sizes": list(sizes),
+            "custom_ops": ["none"],
+        }
+    )
+
+
 def mixed_trace():
     original = ROOT / "traces/hot.jsonl"
     path = ROOT / "traces/hot_mixed.jsonl"
@@ -61,7 +74,32 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "disk":
+    if stage == "graph_offload":
+        for mode in ["off", "none", "conditioned"]:
+            config = configuration("public_coding", [0])
+            if mode == "off":
+                config["server_args"] += ["--max-num-seqs", "2"]
+            else:
+                offload(config, mode, 0.5)
+            decode_graph(config, (1, 2))
+            config["required_checks"] = [
+                str(ROOT / "checks/cpu_prefix_fidelity_graph/manifest.json")
+            ]
+            config["scope"] = "Graph_decode_only_CPU_admission_KV8192_seq2"
+            result.append((f"GRAPHO_{mode}", config))
+    elif stage == "graph_natural":
+        for local in [False, True]:
+            config = configuration("public_coding_8k", [1])
+            natural(config)
+            config["concurrency"] = 32
+            config["server_args"] += ["--max-model-len", "8192", "--max-num-seqs", "32"]
+            decode_graph(config, (1, 2, 4, 8, 16, 32))
+            if local:
+                local_policy(config)
+            config["coding_quality_probes"] = True
+            config["scope"] = "Graph_decode_only_natural_BF16_KV_C32_context8K"
+            result.append((f"GRAPHN_L{int(local)}", config))
+    elif stage == "disk":
         for mode in ["none", "conditioned"]:
             config = configuration("public_coding", [0])
             # Runner substitutes a unique per-run path before server startup.
@@ -96,16 +134,7 @@ def configurations(stage):
             for local in [False, True]:
                 config = configuration("public_coding", [0])
                 if execution == "graph":
-                    config["server_args"].remove("--enforce-eager")
-                    index = config["server_args"].index("--compilation-config")
-                    config["server_args"][index + 1] = json.dumps(
-                        {
-                            "mode": 0,
-                            "cudagraph_mode": "FULL_DECODE_ONLY",
-                            "cudagraph_capture_sizes": [1, 2, 4, 8],
-                            "custom_ops": ["none"],
-                        }
-                    )
+                    decode_graph(config)
                 if local:
                     local_policy(config)
                 config["coding_quality_probes"] = True
@@ -519,6 +548,8 @@ def main():
             "rr_reference",
             "chunk_diagnostic",
             "disk",
+            "graph_offload",
+            "graph_natural",
         ],
         required=True,
     )

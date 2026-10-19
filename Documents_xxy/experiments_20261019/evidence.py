@@ -59,6 +59,9 @@ for trace in ["holdout_coding", "holdout_coding_8k"]:
         )
     )
 COMPARISONS += [
+    ("Graph下本地调度", "CONF_GRAPHN_L0", "CONF_GRAPHN_L1"),
+    ("Graph下CPU准入", "CONF_GRAPHO_none", "CONF_GRAPHO_conditioned"),
+    ("Graph下关闭CPU参照", "CONF_GRAPHO_off", "CONF_GRAPHO_conditioned"),
     ("文件缓存写入准入", "V3_DISK_none", "V3_DISK_conditioned"),
     (
         "PD 布局筛选",

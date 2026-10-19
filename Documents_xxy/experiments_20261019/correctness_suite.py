@@ -254,6 +254,10 @@ async def execute(args):
         config["server_args"] += ["--quantization", "auto_awq"]
     if args.kv_cache_dtype:
         config["server_args"] += ["--kv-cache-dtype", args.kv_cache_dtype]
+    if args.graph:
+        from .extra_cases import decode_graph
+
+        decode_graph(config, (1, 2))
     endpoint = f"http://127.0.0.1:{args.port}"
     argv = [
         sys.executable,
@@ -353,6 +357,7 @@ def main():
     parser.add_argument("--kv-cache-dtype")
     parser.add_argument("--kv-cache-layout")
     parser.add_argument("--storage-tier", choices=["cpu", "disk"], default="cpu")
+    parser.add_argument("--graph", action="store_true")
     parser.add_argument(
         "--protocol", choices=["cpu", "coding", "profile"], default="cpu"
     )
