@@ -254,6 +254,15 @@ async def execute(args):
             await asyncio.sleep(2)
     config = configuration("public_coding", [args.gpu])
     config["model"] = args.model
+    if args.kv_block_size != 16:
+        if 8192 % args.kv_block_size:
+            raise ValueError(
+                "Diagnostic block size must divide the fixed 8192-token pool"
+            )
+        index = config["server_args"].index("--block-size")
+        config["server_args"][index + 1] = str(args.kv_block_size)
+        index = config["server_args"].index("--num-gpu-blocks-override")
+        config["server_args"][index + 1] = str(8192 // args.kv_block_size)
     if args.protocol == "cpu":
         if args.storage_tier == "disk":
             from .extra_cases import disk_offload
@@ -370,6 +379,7 @@ def main():
     parser.add_argument("--kv-cache-layout")
     parser.add_argument("--storage-tier", choices=["cpu", "disk"], default="cpu")
     parser.add_argument("--graph", action="store_true")
+    parser.add_argument("--kv-block-size", type=int, default=16)
     parser.add_argument(
         "--protocol", choices=["cpu", "coding", "profile"], default="cpu"
     )

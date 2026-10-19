@@ -13,6 +13,50 @@ from . import pd_proxy, router
 from .policies import TierTelemetry, WriteAdmission
 
 
+def test_runner_rejects_live_port_before_launch():
+    import socket
+
+    from .run_experiment import check_ports_available
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        with pytest.raises(RuntimeError, match="already occupied"):
+            check_ports_available({"workers": [{"port": port}]})
+
+
+def test_readiness_rejects_another_process_health_endpoint():
+    import asyncio
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from .run_experiment import wait_ready
+
+    class Healthy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Healthy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    process = subprocess.Popen(["sleep", "10"])
+    try:
+        with pytest.raises(RuntimeError, match="not owned"):
+            asyncio.run(wait_ready(server.server_port, process, timeout=2))
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 @pytest.mark.parametrize("contents", [b"abcd", b"ab", b"abce", None])
 def test_disk_probe_only_accepts_complete_payload(tmp_path, contents):
     """A missing/short file cannot turn old CPU staging bytes into valid KV."""

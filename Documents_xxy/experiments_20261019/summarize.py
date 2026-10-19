@@ -44,7 +44,10 @@ def collect(directory):
     row["transfer_layout"] = (
         "packed_v3" if cpu and v3 else "legacy_v2" if cpu else "none"
     )
-    row["quarantined"] = cpu and not v3
+    invalidation = directory / "invalidated.json"
+    row["quarantined"] = cpu and not v3 or invalidation.exists()
+    if invalidation.exists():
+        row["invalidation"] = json.loads(invalidation.read_text())
     if manifest["status"] != "completed":
         row["error"] = manifest.get("error", "")
         return row
@@ -151,7 +154,7 @@ def summarize(root, output):
         writer.writerows(rows)
     groups = defaultdict(list)
     for row in rows:
-        if row["status"] == "completed":
+        if row["status"] == "completed" and not row.get("invalidation"):
             groups[re.sub(r"_rep\d+$", "", row["run"])].append(row)
     lines = [
         "# 实验结果（自动汇总）",

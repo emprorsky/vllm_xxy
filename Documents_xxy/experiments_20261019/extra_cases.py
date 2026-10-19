@@ -75,7 +75,7 @@ def mixed_trace():
 def configurations(stage):
     result = []
     if stage == "graph_router":
-        for policy in ["threshold", "memory_remaining"]:
+        for policy in ["threshold", "work_remaining", "memory_remaining"]:
             config = configuration("public_coding", [2, 3])
             decode_graph(config)
             config["router"] = {
@@ -263,7 +263,7 @@ def configurations(stage):
                 else:
                     config["router"] = {
                         "policy": "threshold",
-                        "port": 8290,
+                        "port": 8292,
                         "capacity_tokens": 8192,
                         "prefill_ms": 0.1,
                         "decode_ms": 35,

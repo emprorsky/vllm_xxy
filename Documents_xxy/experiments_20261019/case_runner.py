@@ -63,7 +63,7 @@ async def execute(args):
             await asyncio.sleep(2)
         else:
             raise TimeoutError("preceding campaign did not finish within 3h")
-    for repeat in range(args.repeats):
+    for repeat in range(args.repeat_start - 1, args.repeat_start - 1 + args.repeats):
         ordered = selected if repeat % 2 == 0 else list(reversed(selected))
         for name, config in ordered:
             run_id = f"{args.prefix}{name}_rep{repeat + 1:02d}"
@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--names", nargs="+")
     parser.add_argument("--prefix", default="")
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--repeat-start", type=int, default=1)
     parser.add_argument("--output", type=Path, default=ROOT / "runs")
     parser.add_argument("--wait-manifest", type=Path)
     parser.add_argument("--wait-manifests", nargs="*", type=Path, default=[])

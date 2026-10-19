@@ -11,12 +11,14 @@ import importlib.util
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import httpx
+import psutil
 
 from .replay_client import replay
 from .validate_outputs import validate
@@ -31,11 +33,39 @@ async def wait_ready(port, process, timeout=300):
             try:
                 response = await client.get(f"http://127.0.0.1:{port}/health")
                 if response.status_code == 200:
+                    parent = psutil.Process(process.pid)
+                    owners = [parent, *parent.children(recursive=True)]
+                    owned = False
+                    for owner in owners:
+                        with contextlib.suppress(psutil.NoSuchProcess):
+                            owned |= any(
+                                connection.laddr.port == port
+                                and connection.status == psutil.CONN_LISTEN
+                                for connection in owner.net_connections(kind="inet")
+                            )
+                    if not owned:
+                        raise RuntimeError(
+                            f"Health port {port} is not owned by launched process"
+                        )
                     return
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(1)
     raise TimeoutError(f"server port {port} not ready after {timeout}s")
+
+
+def check_ports_available(config):
+    ports = [w["port"] for w in config["workers"]]
+    ports += [config[key]["port"] for key in ["router", "pd"] if key in config]
+    if len(ports) != len(set(ports)):
+        raise ValueError("Experiment contains duplicate service ports")
+    for port in ports:
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError as exc:
+                raise RuntimeError(f"Experiment port already occupied: {port}") from exc
 
 
 async def run(args):
@@ -86,6 +116,7 @@ async def run(args):
                 raise RuntimeError(
                     f"required correctness check did not pass: {check_path}"
                 )
+        check_ports_available(config)
         workers = config["workers"]
         for index, worker in enumerate(workers):
             argv = [
