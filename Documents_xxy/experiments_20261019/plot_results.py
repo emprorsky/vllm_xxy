@@ -40,7 +40,13 @@ def comparison(aggregate, names, title, path):
         axis.set_ylabel(ylabel)
         axis.grid(axis="y", alpha=0.2)
     figure.suptitle(
-        title + "\nMedian; whiskers = observed min/max, not confidence intervals",
+        title
+        + (
+            "\nOFFLOAD FIDELITY FAILED: performance observations quarantined"
+            if any(n.startswith(("O_", "D_", "LONG_")) for n in names)
+            else ""
+        )
+        + "\nMedian; whiskers = observed min/max, not confidence intervals",
         fontsize=10,
     )
     figure.tight_layout()
@@ -106,6 +112,51 @@ def main():
             "chunking",
             ["C_512_L0", "C_512_L1", "S1_L0", "S1_L1", "C_2048_L0", "C_2048_L1"],
             "Chunked prefill token budget x local policy",
+        ),
+    ]
+    panels += [
+        (
+            "events",
+            [
+                f"EVENT_{mode}_{policy}"
+                for mode in ["history", "events"]
+                for policy in ["threshold", "work", "cost"]
+            ],
+            "Same event publisher/subscriber: history vs event + completion directory",
+        ),
+        (
+            "long",
+            [f"LONG_{mode}_cpu1" for mode in ["off", "none", "fixed", "conditioned"]],
+            "8K public coding: GPU KV 18432, CPU 1GiB, write threshold 8",
+        ),
+        (
+            "chunk_switch",
+            [f"CSWITCH_{enabled}_L{local}" for enabled in [0, 1] for local in [0, 1]],
+            "Chunking switch with matched 8192-token budget",
+        ),
+        (
+            "natural",
+            ["NATURAL_L0", "NATURAL_L1"],
+            "Natural GPU KV profiling capacity: local scheduling control",
+        ),
+        (
+            "quantization",
+            [
+                f"V_{precision}_fixed_L{local}"
+                for precision in ["BF16", "AWQ"]
+                for local in [0, 1]
+            ],
+            "Weight precision x local policy: only output-gated completed runs",
+        ),
+        (
+            "pd3",
+            [
+                f"PD3_{p}P{3 - p}D_{route}"
+                for p in [1, 2]
+                for route in ["rr_rr", "cost_work"]
+            ]
+            + ["REPLICA_3"],
+            "Three GPUs: P/D ratio and full replicas",
         ),
     ]
     for name, selected, title in panels:
