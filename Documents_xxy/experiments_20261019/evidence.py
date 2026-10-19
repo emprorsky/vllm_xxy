@@ -59,6 +59,14 @@ for trace in ["holdout_coding", "holdout_coding_8k"]:
         )
     )
 COMPARISONS += [
+    ("2P2D CPU准入迁移筛选", "SCREEN_PDCPU2_none", "SCREEN_PDCPU2_conditioned"),
+    (
+        "剩余工作路由独立任务集",
+        "VALID_HOLDOUT_R_threshold",
+        "VALID_HOLDOUT_R_work_remaining",
+    ),
+    ("四卡架构复验", "CONF_ARCH_replica4", "CONF_ARCH_2P2D_rr"),
+    ("2P2D decode选路", "CONF_ARCH_2P2D_rr", "CONF_ARCH_2P2D_work"),
     ("Graph下内存感知路由", "CONF_GRAPHR_threshold", "CONF_GRAPHR_memory_remaining"),
     (
         "Graph下队列模型独立增量",

@@ -259,6 +259,7 @@ async def run(args):
                 prefills[0],
                 decodes,
                 args.output / "pd_fidelity.json",
+                prefillers=prefills,
             )
             if not manifest["pd_fidelity"]["passed"]:
                 raise RuntimeError("P/D fidelity probes did not pass")

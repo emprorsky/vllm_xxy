@@ -119,6 +119,11 @@ def main():
     ]
     panels += [
         (
+            "architecture_final",
+            ["CONF_ARCH_replica4", "CONF_ARCH_2P2D_rr", "CONF_ARCH_2P2D_work"],
+            "Four GPUs: full replicas vs pair-validated 2P2D",
+        ),
+        (
             "v3_offload",
             [f"V3_O_seq2_{m}_cpu0p5" for m in ["off", "none", "fixed", "conditioned"]],
             "Corrected packed KV transfer: CPU admission, fixed GPU/CPU capacity",

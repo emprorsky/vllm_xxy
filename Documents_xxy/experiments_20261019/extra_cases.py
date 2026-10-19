@@ -74,7 +74,50 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "graph_router":
+    if stage == "pd_cpu2":
+        for name, source in configurations("pd_cpu"):
+            mode = name.removeprefix("PDCPU_")
+            if mode == "off":
+                continue
+            config = configuration("public_coding", [0, 1, 2, 3])
+            disaggregate(config, 2)
+            config["server_args"] += ["--max-num-seqs", "2"]
+            config["env"].update(source["env"])
+            config["env"]["LMCACHE_MAX_LOCAL_CPU_SIZE"] = "0.25"
+            for worker in config["workers"]:
+                template = source["workers"][0 if worker["role"] == "P" else 1]
+                worker["args"] = copy.deepcopy(template["args"])
+                at = worker["args"].index("--kv-transfer-config")
+                transfer = json.loads(worker["args"][at + 1])
+                cpu = transfer["kv_connector_extra_config"]["connectors"][1]
+                cpu["kv_connector_extra_config"]["admission_cpu_bytes"] = 256 * 1024**2
+                worker["args"][at + 1] = json.dumps(transfer)
+            config["required_checks"] = source["required_checks"]
+            config["coding_quality_probes"] = True
+            config["pd_fidelity_probes"] = True
+            config["scope"] = "2P2D_mandatory_NIXL_optional_CPU_total1GiB_seq2"
+            result.append((f"PDCPU2_{mode}", config))
+    elif stage == "architecture_final":
+        for architecture in ["replica4", "2P2D_rr", "2P2D_work"]:
+            config = configuration("public_coding", [0, 1, 2, 3])
+            config["coding_quality_probes"] = True
+            if architecture == "replica4":
+                config["router"] = {
+                    "policy": "threshold",
+                    "port": 8293,
+                    "capacity_tokens": 8192,
+                    "prefill_ms": 0.1,
+                    "decode_ms": 35,
+                }
+            else:
+                disaggregate(config, 2)
+                config["pd"]["decode_policy"] = (
+                    "work" if architecture.endswith("work") else "rr"
+                )
+                config["pd_fidelity_probes"] = True
+            config["scope"] = "four_GPU_same_KV_eager_architecture_with_pair_fidelity"
+            result.append((f"ARCH_{architecture}", config))
+    elif stage == "graph_router":
         for policy in ["threshold", "work_remaining", "memory_remaining"]:
             config = configuration("public_coding", [2, 3])
             decode_graph(config)
@@ -572,6 +615,8 @@ def main():
             "graph_offload",
             "graph_natural",
             "graph_router",
+            "architecture_final",
+            "pd_cpu2",
         ],
         required=True,
     )

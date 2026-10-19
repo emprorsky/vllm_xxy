@@ -11,7 +11,7 @@ from .suite import ROOT
 from .summarize import samples
 
 
-async def validate_pd(model, proxy, prefill, decoders, output):
+async def validate_pd(model, proxy, prefill, decoders, output, prefillers=None):
     tokenizer = AutoTokenizer.from_pretrained(model, local_files_only=True)
     rows = [
         json.loads(line)
@@ -49,19 +49,20 @@ async def validate_pd(model, proxy, prefill, decoders, output):
     if any(tuple(tokens[:16]) in evaluation_roots for _, tokens, _ in probes):
         raise ValueError("diagnostic prefix overlaps performance trace")
     records = []
+    pairs = []
     async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
         before = {
             endpoint: samples((await client.get(endpoint + "/metrics")).text)
             for endpoint in decoders
         }
 
-        async def query(endpoint, tokens, rid):
+        async def query(endpoint, tokens, rid, transfer=None, budget=16):
             response = await client.post(
                 endpoint + "/v1/completions",
                 json={
                     "model": "experiment",
                     "prompt": tokens,
-                    "max_tokens": 16,
+                    "max_tokens": budget,
                     "temperature": 0,
                     "return_token_ids": True,
                     "logprobs": 20,
@@ -69,6 +70,7 @@ async def validate_pd(model, proxy, prefill, decoders, output):
                     "kv_transfer_params": {
                         "lmcache.skip_save": True,
                         "experiment.phase": "validation",
+                        **(transfer or {}),
                     },
                 },
                 headers={"X-Request-ID": rid},
@@ -108,6 +110,87 @@ async def validate_pd(model, proxy, prefill, decoders, output):
                     == pd["choices"][0].get("token_ids"),
                 }
             )
+        if len(prefillers or []) > 1:
+            roots = set()
+            for pi, p_endpoint in enumerate(prefillers):
+                for di, d_endpoint in enumerate(decoders):
+                    pair_marker = tokenizer.encode(
+                        f"<|im_start|>system\nPAIR_{pi}_{di}. "
+                        "Transport diagnostic.<|im_end|>\n",
+                        add_special_tokens=False,
+                    )
+                    identity = tuple((pair_marker + probes[0][1])[:16])
+                    if identity in roots or identity in evaluation_roots:
+                        raise ValueError("P/D diagnostic pair prefix is not unique")
+                    roots.add(identity)
+                    pair_before = samples(
+                        (await client.get(d_endpoint + "/metrics")).text
+                    )
+                    pair_passed = True
+                    for label, original, expected in [probes[0], probes[-3]]:
+                        tokens = pair_marker + original
+                        rid = f"pdfidelity-p{pi}-d{di}-{label}"
+                        cold = await query(p_endpoint, tokens, rid + "-cold")
+                        gpu = await query(p_endpoint, tokens, rid + "-gpu")
+                        remote = await query(
+                            p_endpoint,
+                            tokens,
+                            rid + "-handoff",
+                            {"do_remote_decode": True, "do_remote_prefill": False},
+                            budget=1,
+                        )
+                        transfer_params = remote.get("kv_transfer_params", {})
+                        if not transfer_params.get("remote_block_ids"):
+                            raise RuntimeError("Direct pair did not return remote KV")
+                        decoded = await query(
+                            d_endpoint, tokens, rid + "-D", transfer_params
+                        )
+                        baseline = difference(cold, gpu)
+                        actual = difference(cold, decoded)
+                        limit = max(
+                            0.3, 2 * (baseline["max_shared_logprob_delta"] or 0)
+                        )
+                        numeric = (
+                            actual["max_shared_logprob_delta"] is not None
+                            and actual["max_shared_logprob_delta"] <= limit
+                            and actual["topk_overlap"]
+                            >= min(0.8, baseline["topk_overlap"])
+                        )
+                        content = expected is None or all(
+                            re.search(
+                                rf"\b{expected}\b", x["choices"][0]["text"].casefold()
+                            )
+                            for x in [cold, gpu, decoded]
+                        )
+                        pair_passed &= bool(numeric and content)
+                        records.append(
+                            {
+                                "name": rid,
+                                "numerical_gate": numeric,
+                                "content_gate": bool(content),
+                                "cold_vs_gpu": baseline,
+                                "cold_vs_pd": actual,
+                                "cold": cold,
+                                "gpu": gpu,
+                                "pd": decoded,
+                                "remote_engine_id": transfer_params.get(
+                                    "remote_engine_id"
+                                ),
+                            }
+                        )
+                    after = samples((await client.get(d_endpoint + "/metrics")).text)
+                    moved = (
+                        after["vllm:nixl_bytes_transferred_sum"]
+                        - pair_before["vllm:nixl_bytes_transferred_sum"]
+                    )
+                    failed = (
+                        after["vllm:nixl_num_failed_transfers_total"]
+                        - pair_before["vllm:nixl_num_failed_transfers_total"]
+                    )
+                    pair_passed &= moved > 0 and failed == 0
+                    pairs.append(
+                        {"P": pi, "D": di, "passed": pair_passed, "bytes": moved}
+                    )
         delta = {}
         for endpoint in decoders:
             after = samples((await client.get(endpoint + "/metrics")).text)
@@ -124,9 +207,11 @@ async def validate_pd(model, proxy, prefill, decoders, output):
         "passed": all(r["numerical_gate"] and r["content_gate"] for r in records)
         and transfer > 0
         and failures == 0
+        and all(pair["passed"] for pair in pairs)
         and prefill_work <= 16 * len(records),
         "probes": len(records),
         "records": records,
+        "direct_pairs": pairs,
         "decoder_counter_deltas": delta,
         "actual_transfer_bytes": transfer,
         "decoder_local_prefill_tokens": prefill_work,
@@ -139,5 +224,6 @@ async def validate_pd(model, proxy, prefill, decoders, output):
             "probes",
             "actual_transfer_bytes",
             "decoder_local_prefill_tokens",
+            "direct_pairs",
         ]
     }
