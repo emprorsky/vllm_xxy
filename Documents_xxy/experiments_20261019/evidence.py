@@ -61,7 +61,7 @@ for trace in ["holdout_coding", "holdout_coding_8k"]:
 COMPARISONS += [
     ("INT8对齐配置内准入筛选", "SCREEN_KVINT8A_none", "SCREEN_KVINT8A_conditioned"),
     ("文件缓存准入最终复验", "FINAL_DISK_none", "FINAL_DISK_conditioned"),
-    ("2P2D CPU准入迁移筛选", "SCREEN_PDCPU2_none", "SCREEN_PDCPU2_conditioned"),
+    ("2P2D CPU准入迁移（成功轮）", "SCREEN_PDCPU2_none", "SCREEN_PDCPU2_conditioned"),
     (
         "剩余工作路由独立任务集",
         "VALID_HOLDOUT_R_threshold",
@@ -109,6 +109,25 @@ def compare(root, label, baseline, treatment):
     left, right = fold(root, baseline), fold(root, treatment)
     result = {"label": label, "baseline": baseline, "treatment": treatment}
     result["runs"] = {"baseline": left, "treatment": right}
+    retained = {r["run"] for r in left + right}
+    excluded = []
+    for name in [baseline, treatment]:
+        for path in sorted(root.glob(name + "_rep*/manifest.json")):
+            if path.parent.name in retained:
+                continue
+            manifest = json.loads(path.read_text())
+            marker = path.parent / "invalidated.json"
+            excluded.append(
+                {
+                    "run": path.parent.name,
+                    "status": manifest["status"],
+                    "error": manifest.get("error"),
+                    "invalidation": json.loads(marker.read_text())
+                    if marker.exists()
+                    else None,
+                }
+            )
+    result["excluded_attempts"] = excluded
     result["n"] = [len(left), len(right)]
     if not left or not right:
         return {**result, "status": "pending_or_failed"}
@@ -117,6 +136,11 @@ def compare(root, label, baseline, treatment):
         raise ValueError(f"Mismatched trace in {label}")
     if len({r["gpus"] for r in left + right}) != 1:
         raise ValueError(f"Mismatched GPU count in {label}")
+    same_roles = len({tuple(r["worker_roles"]) for r in left + right}) == 1
+    if not same_roles:
+        result["metric_scope_notes"] = [
+            "GPU hit ratio comparison omitted: different worker roles."
+        ]
     metrics = {}
     for key in [
         "output_tok_s",
@@ -128,6 +152,8 @@ def compare(root, label, baseline, treatment):
         "gpu_prefix_hit_ratio",
         "num_preemptions",
     ]:
+        if key == "gpu_prefix_hit_ratio" and not same_roles:
+            continue
         values = [
             [r[key] for r in group if r[key] is not None] for group in (left, right)
         ]
@@ -197,7 +223,14 @@ def export(root, output):
             "INT8 对齐筛选另用 GPU block256 / LMCache chunk256，11项恢复检查通过；"
             "不能覆盖原失败或跨精度归因。"
         ),
+        "跨架构P/D角色不同，聚合GPU命中率分母不一致，不输出其对照百分比。",
     ]
+    for result in results:
+        for row in result["excluded_attempts"]:
+            lines.append(
+                f"排除尝试：{result['label']} / {row['run']} / {row['status']}；"
+                "不计入成功性能，失败或撤出原因见evidence.json及原manifest。"
+            )
     (output / "evidence.md").write_text("\n".join(lines) + "\n")
     return results
 

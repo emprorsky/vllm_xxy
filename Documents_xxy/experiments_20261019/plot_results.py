@@ -134,7 +134,10 @@ def main():
         (
             "pd_cpu2_screen",
             [f"SCREEN_PDCPU2_{p}" for p in ["none", "conditioned"]],
-            "2P2D: mandatory NIXL plus optional CPU admission, 1GiB total host KV",
+            (
+                "2P2D CPU admission: 1GiB host KV, completed pairs only\n"
+                "One diagnostic HTTP failure retained outside timing"
+            ),
         ),
         (
             "architecture_final",

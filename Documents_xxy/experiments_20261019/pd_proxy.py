@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import time
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -140,7 +141,16 @@ def create_app(args):
             p_policy.finish(rid, tokens, False)
             d_policy.finish(rid, tokens, False)
             log.write(
-                json.dumps({"event": "error", "request_id": rid, "error": str(exc)})
+                json.dumps(
+                    {
+                        "event": "error",
+                        "request_id": rid,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "error_repr": repr(exc),
+                        "traceback": traceback.format_exc(),
+                    }
+                )
                 + "\n"
             )
             if isinstance(exc, asyncio.CancelledError):

@@ -1,9 +1,9 @@
 {
-  "updated_utc": "2026-10-19 03:50 UTC",
-  "stage": "主线及独立验证已完成；Graph/文件层正式三轮与四卡最终验收",
-  "status": "running",
-  "completed_runs": 257,
-  "successful_responses": 31672,
+  "updated_utc": "2026-10-19 04:49:01 UTC",
+  "stage": "本轮实验闭环交付；已完成主线与选定扩展，未定位问题单列",
+  "status": "completed_with_limitations",
+  "completed_runs": 289,
+  "successful_responses": 35407,
   "live_status": "/root/autodl-tmp/outputs/kv_aware_20261019/status.md",
   "evidence": "/root/autodl-tmp/outputs/kv_aware_20261019/summary/evidence.md",
   "completed": [
@@ -16,28 +16,24 @@
     "新增43项策略/adapter/事件/清理测试通过；原调度31项回归此前通过",
     "文件层三轮+2.37%/TTFT -5.33%，哈希与边界恢复门禁通过",
     "Graph本地/CPU/路由三轮完成，路由独立模型增量小",
-    "对齐INT8恢复11/11与代码6/6通过，单轮性能筛选完成"
+    "对齐INT8恢复11/11与代码6/6通过，单轮性能筛选完成",
+    "四卡架构三轮9个运行全部完成，6个PD运行各19项全过",
+    "2P2D CPU成功配对1/3/4吞吐+2.55%，另一次诊断502保留，未宣称生产稳定"
   ],
-  "running": [
-    "GPU0/1 布局完整副本对照",
-    "全四卡 架构三轮→2P2D CPU迁移筛选"
-  ],
+  "running": [],
   "blockers": [
-    "旧V2、端口污染配对、文件开发轮均保留并隔离",
-    "原block16 INT8恢复未过；对齐256路径已过11项",
-    "FP8 Triton受SM86限制",
-    "默认预编译算子异常；工作路径native RMSNorm/Triton，eager与decode Graph分别统计"
+    "Default precompiled operator root cause",
+    "One 2P2D CPU diagnostic HTTP 502, root cause unknown",
+    "Original block16 INT8 fidelity failure; aligned256 is a separate configuration",
+    "FP8 unsupported on selected SM86/Triton path"
   ],
-  "pending": [
-    "完成所有已排队运行",
-    "对照机制归因和图表",
-    "最终报告与项目描述"
-  ],
+  "pending": [],
   "targeted_tests_passed": 43,
-  "analyzable_completed_runs": 237,
+  "analyzable_completed_runs": 268,
   "response_count_scope": "HTTP successful responses including retained isolated runs; not a model accuracy score",
   "interview_deadline_beijing": "2026-10-19 20:00",
   "delivery_hard_deadline_beijing": "2026-10-19 14:00",
   "delivery_target_beijing": "2026-10-19 13:00",
-  "scope_frozen": "Finish queued key repetitions and architecture gates; no new research matrices"
+  "scope_frozen": "Finish queued key repetitions and architecture gates; no new research matrices",
+  "acceptance": "/root/autodl-tmp/outputs/kv_aware_20261019/summary/acceptance.json"
 }

@@ -94,16 +94,18 @@ Graph 本身的收益当作自研调度收益。`holdout_memory` 使用事先固
 不替代此前正常scheduler的性能结果。
 
 `DiskWorkingSetLMCacheConnector` 将同一写入准入扩展到本地持久文件层：
-CPU暂存0.125GiB、磁盘1GiB，负载上限1024tokens。策略只使用文件层容量和真实
+CPU暂存0.25GiB、磁盘1GiB，加载上限2048tokens。策略只使用文件层容量和真实
 已发布驻留/容量淘汰，不将CPU重复副本相加。文件读取检查完整长度，缺失/短读
 不能使用旧暂存字节；读写字节与耗时分别记录。普通文件IO可能命中OS页缓存，
 不能将它解释成NAND计时。各run有独立缓存目录，原始缓存不跨组复用。
-先运行 `correctness_suite --storage-tier disk`，让噪声请求实际保存并挤出CPU，
-要求11项数值/内容门禁和每项真实文件读取全部通过；之后才运行 `--stages disk`。
+先运行 `correctness_suite --storage-tier disk --output NEW_CHECK_DIRECTORY`，
+让噪声请求实际保存并挤出CPU，要求11项数值/内容、每项真实文件读取/哈希和32-token
+GPU前缀的load-cap分支全部通过。`disk_final`要求已留存的staging0p25与boundary门禁均通过。
 
-INT8 KV单卡代码探测通过，但CPU恢复中4/11项超过原先冻结的概率门限。
-字节复制通过不等于模型路径数值已验收；INT8 offload性能运行被required_checks
-阻止，不纳入收益结论。BF16 CPU路径已单独通过11项。
+INT8 KV原block16路径的CPU恢复中4/11项超过冻结概率门限，性能被required_checks阻止。
+另用 `--kv-cache-dtype int8 --kv-block-size 256` 对齐GPU block与host chunk后11/11通过；
+只允许`kvint8_aligned`单列筛选，不能覆盖原失败或跨精度比较为算法收益。
+字节复制通过不等于模型路径数值已验收。BF16 CPU路径已单独通过11项。
 
 导出显式对照表（含每轮值、配对变化、读写/命中/抢占计数）：
 
@@ -114,7 +116,7 @@ INT8 KV单卡代码探测通过，但CPU恢复中4/11项超过原先冻结的概
 ```
 
 `status_snapshot` 自动发现CPU/磁盘/量化等正确性manifest，页面上保留旧失败记录。
-截至本次追加，策略、故障清理、PD元数据、事件目录和文件完整读取共36项测试通过。
+策略、故障清理、PD元数据、事件目录、文件完整读取和加载端点共43项针对性测试通过。
 
 端口隔离：PD布局副本对照使用独立8292，不与GPU2/3路由8290共享。
 运行前检查worker/router/PD端口互不重复且未占用；health就绪还核对监听PID属于本次

@@ -38,6 +38,9 @@ def counters(path):
 def collect(directory):
     manifest = json.loads((directory / "manifest.json").read_text())
     row = {"run": directory.name, "status": manifest["status"]}
+    row["worker_roles"] = [
+        worker.get("role", "replica") for worker in manifest["config"]["workers"]
+    ]
     environment = manifest["config"].get("env", {})
     cpu = environment.get("LMCACHE_LOCAL_CPU", "").lower() == "true"
     v3 = environment.get("LMCACHE_USE_GPU_CONNECTOR_V3", "").lower() == "true"
