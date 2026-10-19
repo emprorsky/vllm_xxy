@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+<title id="title">PD分离：把处理输入与持续生成交给两个角色</title><desc id="desc">问题是长输入与持续生成共享资源。P处理输入并建立KV，D必须收到真实KV后继续生成；两边都保留完整模型。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="680" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：长输入处理与持续生成，共用同一张卡的资源</text>
+<rect x="30" y="83" width="1140" height="88" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="53" y="119" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="start">已有请求正在逐个输出；又来了长输入，可能出现等待与相互干扰。</text>
+<text x="53" y="153" font-size="23" style="fill:#172554" font-weight="bold" text-anchor="start">解决思路：分成P和D两个角色，但必须付出KV交接成本。</text>
+<rect x="35" y="235" width="330" height="190" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="200" y="277" font-size="27" style="fill:#172554" font-weight="bold" text-anchor="middle">输入请求</text>
+<text x="200" y="329" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">例如2000-token历史</text>
+<text x="200" y="378" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="middle">希望继续输出答案</text>
+<rect x="435" y="235" width="330" height="190" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="600" y="277" font-size="27" style="fill:#172554" font-weight="bold" text-anchor="middle">P：处理输入</text>
+<text x="600" y="329" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">建立各层KV状态</text>
+<text x="600" y="378" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="middle">本实例有完整模型</text>
+<rect x="835" y="235" width="330" height="190" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1000" y="277" font-size="27" style="fill:#172554" font-weight="bold" text-anchor="middle">D：持续生成</text>
+<text x="1000" y="329" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">接收KV，继续decode</text>
+<text x="1000" y="378" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="middle">本实例也有完整模型</text>
+<line x1="375" y1="315" x2="425" y2="315" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="775" y1="315" x2="825" y2="315" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="800" y="465" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">真实KV经NIXL传输</text>
+<rect x="30" y="510" width="1140" height="125" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="54" y="552" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">代理先取得“KV来自哪个实例、在哪些块、覆盖多长”的交接信息。</text>
+<text x="54" y="589" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="start">信息缺失就报错，不能偷偷让D从头重算后仍称传输成功。</text>
+<text x="54" y="620" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="start">CPU中转只是一种搬运路径，不等于给未来会话保存CPU缓存。</text>
+</svg>

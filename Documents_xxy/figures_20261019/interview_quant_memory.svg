@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img" aria-labelledby="title desc">
+<title id="title">权重量化与KV量化：减少的是不同部分</title><desc id="desc">教学显存分格示意：权重量化压缩模型参数，为更多KV留空间；KV量化压缩每个请求的状态。格数不代表实测容量。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="690" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：显存既要装模型参数，也要装每个请求的KV</text>
+<text x="35" y="88" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="start">同样大小的显存，下面用12格作教学示意，格数不是实测</text>
+<text x="35" y="135" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">原来</text>
+<rect x="35" y="157" width="561" height="65" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="315.5" y="198" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">权重</text>
+<rect x="599" y="157" width="373" height="65" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="785.5" y="198" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">同一批请求KV</text>
+<rect x="975" y="157" width="185" height="65" rx="7" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="1067.5" y="198" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">其他</text>
+<text x="35" y="295" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">权重量化：压缩参数</text>
+<rect x="35" y="317" width="279" height="65" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="174.5" y="358" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">较小权重</text>
+<rect x="317" y="317" width="655" height="65" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="644.5" y="358" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">可安排更大的KV池</text>
+<rect x="975" y="317" width="185" height="65" rx="7" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="1067.5" y="358" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">其他</text>
+<text x="35" y="455" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">KV量化：压缩请求状态</text>
+<rect x="35" y="477" width="561" height="65" rx="7" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="315.5" y="518" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">权重</text>
+<rect x="599" y="477" width="185" height="65" rx="7" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="691.5" y="518" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">较小KV</text>
+<rect x="787" y="477" width="185" height="65" rx="7" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="879.5" y="518" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">腾出</text>
+<rect x="975" y="477" width="185" height="65" rx="7" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="1067.5" y="518" font-size="22" style="fill:#172554" font-weight="normal" text-anchor="middle">其他</text>
+<rect x="30" y="582" width="1140" height="76" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="54" y="628" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">AWQ不会自动把KV也变成INT8；省空间也不保证kernel执行一定更快。</text>
+</svg>

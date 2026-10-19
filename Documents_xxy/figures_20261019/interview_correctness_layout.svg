@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="750" viewBox="0 0 1200 750" role="img" aria-labelledby="title desc">
+<title id="title">KV布局：数字都搬过来了，为什么仍然错</title><desc id="desc">缩小示例：K1=11 K2=12 V1=21 V2=22。分离排列与按token打包排列的坐标解释不同，数量相同不能证明语义正确。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="750" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：元素数相同，不代表每个数仍在正确坐标</text>
+<text x="35" y="92" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="start">教学小例子：token1的K/V是11/21，token2的K/V是12/22</text>
+<rect x="30" y="130" width="555" height="332" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="50" y="174" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">错误风险：分离数据按打包格式解释</text>
+<text x="110" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">K1</text>
+<rect x="53" y="251" width="115" height="65" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="110" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">11</text>
+<text x="239" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">V1</text>
+<rect x="182" y="251" width="115" height="65" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="239" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">12</text>
+<text x="368" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">K2</text>
+<rect x="311" y="251" width="115" height="65" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="368" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">21</text>
+<text x="497" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">V2</text>
+<rect x="440" y="251" width="115" height="65" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="497" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">22</text>
+<text x="53" y="369" font-size="24" style="fill:#b91c1c" font-weight="bold" text-anchor="start">token1的V被误认成12</text>
+<text x="53" y="412" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="start">有输出，不代表中间状态正确</text>
+<rect x="615" y="130" width="555" height="332" rx="14" fill="#f8fafc" stroke="#cbd5e1"/>
+<text x="635" y="174" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">正确目标：数据与打包格式一致</text>
+<text x="695" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">K1</text>
+<rect x="638" y="251" width="115" height="65" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="695" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">11</text>
+<text x="824" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">V1</text>
+<rect x="767" y="251" width="115" height="65" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="824" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">21</text>
+<text x="953" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">K2</text>
+<rect x="896" y="251" width="115" height="65" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="953" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">12</text>
+<text x="1082" y="229" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">V2</text>
+<rect x="1025" y="251" width="115" height="65" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1082" y="294" font-size="30" style="fill:#172554" font-weight="bold" text-anchor="middle">22</text>
+<text x="638" y="369" font-size="24" style="fill:#166534" font-weight="bold" text-anchor="start">token1的K/V正确为11/21</text>
+<text x="638" y="412" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="start">还要继续验收真实驱逐与恢复</text>
+<rect x="30" y="510" width="1140" height="186" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="53" y="550" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">修复顺序：先识别GPU真实布局，再初始化connector与分配器。</text>
+<text x="53" y="592" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="start">然后检查逐元素来回复制，以及恢复后的概率、事实和代码行为。</text>
+<text x="53" y="634" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="start">不能只改一个reshape，或看到HTTP成功就把速度提升当真。</text>
+<text x="53" y="672" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="start">图只缩小到两token解释坐标；真实KV还包含层、head与维度。</text>
+</svg>

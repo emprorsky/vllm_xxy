@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+<title id="title">四副本与2P2D：四张GPU的角色如何不同</title><desc id="desc">四完整副本均可生成。2P2D固定两张P两张D，只有两张承担持续decode，并增加跨角色KV交接。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="760" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">同样四张GPU，能持续生成的卡数并不相同</text>
+<text x="35" y="90" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">四完整副本：四张都能处理输入，也都能生成</text>
+<rect x="35" y="120" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="157" y="163" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU0</text>
+<text x="157" y="210" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P + D</text>
+<rect x="330" y="120" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="452" y="163" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU1</text>
+<text x="452" y="210" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P + D</text>
+<rect x="625" y="120" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="747" y="163" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU2</text>
+<text x="747" y="210" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P + D</text>
+<rect x="920" y="120" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="1042" y="163" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU3</text>
+<text x="1042" y="210" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P + D</text>
+<text x="35" y="298" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">2P2D：两张负责输入，两张负责持续生成</text>
+<rect x="35" y="330" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="157" y="373" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU0</text>
+<text x="157" y="420" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P0</text>
+<rect x="330" y="330" width="245" height="130" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="452" y="373" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU1</text>
+<text x="452" y="420" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">P1</text>
+<rect x="625" y="330" width="245" height="130" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="747" y="373" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU2</text>
+<text x="747" y="420" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">D0</text>
+<rect x="920" y="330" width="245" height="130" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1042" y="373" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">GPU3</text>
+<text x="1042" y="420" font-size="31" style="fill:#172554" font-weight="normal" text-anchor="middle">D1</text>
+<line x1="290" y1="495" x2="900" y2="495" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="600" y="531" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">P到D还要交接KV；本机需要主机中转</text>
+<rect x="30" y="570" width="1140" height="145" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="53" y="612" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">本机三轮中位数：四副本167.66 tok/s，2P2D轮询87.13 tok/s。</text>
+<text x="53" y="655" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="start">两张D、D侧KV池较小、交接成本，共同限制了本次配置。</text>
+<text x="53" y="691" font-size="22" style="fill:#475569" font-weight="normal" text-anchor="start">这不表示PD普遍无效，也没有把每一项开销单独隔离出来。</text>
+</svg>

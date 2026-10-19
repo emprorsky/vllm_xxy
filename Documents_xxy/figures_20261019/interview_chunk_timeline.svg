@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" role="img" aria-labelledby="title desc">
+<title id="title">Chunked prefill：给长输入分轮，减少长段占用</title><desc id="desc">教学示意：长prefill期间decode可能停顿。切成多段后，在多轮中给正在生成的请求继续推进机会。不是精确GPU时间线。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="660" fill="white"/>
+<text x="35" y="48" font-size="28" style="fill:#172554" font-weight="bold" text-anchor="start">问题：一个长输入处理太久，其他请求的输出可能停顿</text>
+<text x="35" y="94" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">未切分示意：长prefill占据一大段执行时间</text>
+<rect x="40" y="125" width="120" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="100" y="169" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">输出1</text>
+<rect x="170" y="125" width="850" height="70" rx="14" fill="#fee2e2" stroke="#cbd5e1"/>
+<text x="595" y="169" font-size="26" style="fill:#172554" font-weight="normal" text-anchor="middle">很长的一段输入处理</text>
+<rect x="1030" y="125" width="130" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1095" y="169" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">输出2</text>
+<text x="595" y="229" font-size="23" style="fill:#b91c1c" font-weight="normal" text-anchor="middle">两次输出之间，可能出现较长等待</text>
+<text x="35" y="288" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">切分后示意：多轮推进输入，同时给decode继续运行的机会</text>
+<rect x="35" y="320" width="115" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="92.5" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输出1</text>
+<rect x="153" y="320" width="220" height="70" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="263.0" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输入段1</text>
+<rect x="376" y="320" width="115" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="433.5" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输出2</text>
+<rect x="494" y="320" width="220" height="70" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="604.0" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输入段2</text>
+<rect x="717" y="320" width="115" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="774.5" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输出3</text>
+<rect x="835" y="320" width="220" height="70" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="945.0" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输入段3</text>
+<rect x="1058" y="320" width="115" height="70" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1115.5" y="364" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">输出4</text>
+<rect x="30" y="448" width="1140" height="145" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="53" y="488" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="start">教学预算：一轮最多6 tokens，两个decode各用1，剩4个给prefill。</text>
+<text x="53" y="531" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="start">12-token输入可分3轮处理；现实还受容量、队列与执行细节影响。</text>
+<text x="53" y="570" font-size="21" style="fill:#475569" font-weight="normal" text-anchor="start">图只表示穿插机会，不按真实时长绘制；同一batch里可同时包含两类token。</text>
+</svg>

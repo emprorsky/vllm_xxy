@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="670" viewBox="0 0 1200 670" role="img" aria-labelledby="title desc">
+<title id="title">CUDA Graph：减少反复提交操作的开销</title><desc id="desc">CPU逐个提交GPU操作有开销。Graph先记录适合的执行结构，后续重放；GPU仍执行实际计算。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="670" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：每一步decode，都要反复提交很多GPU操作</text>
+<text x="35" y="101" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">普通执行：CPU逐项提交</text>
+<rect x="35" y="130" width="330" height="73" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="200" y="176" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">CPU提交操作1</text>
+<line x1="200" y1="209" x2="200" y2="250" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="35" y="262" width="330" height="68" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="200" y="305" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">GPU执行操作1</text>
+<rect x="435" y="130" width="330" height="73" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="600" y="176" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">CPU提交操作2</text>
+<line x1="600" y1="209" x2="600" y2="250" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="435" y="262" width="330" height="68" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="600" y="305" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">GPU执行操作2</text>
+<rect x="835" y="130" width="330" height="73" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="1000" y="176" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">CPU提交操作3</text>
+<line x1="1000" y1="209" x2="1000" y2="250" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="835" y="262" width="330" height="68" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="1000" y="305" font-size="24" style="fill:#172554" font-weight="normal" text-anchor="middle">GPU执行操作3</text>
+<text x="35" y="385" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="start">Graph：先记录适合的结构，后续一次重放</text>
+<rect x="35" y="415" width="330" height="90" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="200" y="469" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">CPU发起图重放</text>
+<line x1="380" y1="461" x2="425" y2="461" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="435" y="415" width="730" height="90" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="800" y="469" font-size="25" style="fill:#172554" font-weight="normal" text-anchor="middle">GPU仍执行：操作1 → 操作2 → 操作3</text>
+<rect x="30" y="548" width="1140" height="88" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="53" y="584" font-size="23" style="fill:#172554" font-weight="bold" text-anchor="start">减少的是反复提交开销；没有跳过attention，也没有自动增加KV命中。</text>
+<text x="53" y="620" font-size="22" style="fill:#475569" font-weight="normal" text-anchor="start">本项目使用已有Graph能力，在同Graph模式内比较自己的策略。</text>
+</svg>

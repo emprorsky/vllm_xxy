@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="770" viewBox="0 0 1200 770" role="img" aria-labelledby="title desc">
+<title id="title">一个请求怎样经过路由、本地调度与保存准入</title><desc id="desc">教学流程：选实例、选准入、检查KV和保存决定、执行、反馈真实输出、结束清理。是职责示意，不代表所有配置同时启用。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="770" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">把各层连起来：每层只回答一个不同的问题</text>
+<rect x="35" y="115" width="330" height="190" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="200" y="169" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">① R：送到哪里？</text>
+<text x="200" y="227" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">比较各实例的等待与首响估计</text>
+<rect x="435" y="115" width="330" height="190" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="600" y="169" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">② L：谁先进入？</text>
+<text x="600" y="227" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">同优先级窗口，兼顾复用与等待</text>
+<rect x="835" y="115" width="330" height="190" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="1000" y="169" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">③ KV检查与O决定</text>
+<text x="1000" y="227" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">验证命中，决定是否额外保存</text>
+<rect x="835" y="405" width="330" height="190" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="1000" y="459" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">④ 模型正常执行</text>
+<text x="1000" y="517" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">分轮prefill、decode，按许可保存</text>
+<rect x="435" y="405" width="330" height="190" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="600" y="459" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">⑤ 输出反馈给R</text>
+<text x="600" y="517" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">看到真实token，更新剩余预算</text>
+<rect x="35" y="405" width="330" height="190" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="200" y="459" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">⑥ 结束或取消</text>
+<text x="200" y="517" font-size="20" style="fill:#172554" font-weight="normal" text-anchor="middle">清理请求账本，暂留会话历史</text>
+<line x1="375" y1="210" x2="425" y2="210" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="775" y1="210" x2="825" y2="210" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1000" y1="315" x2="1000" y2="395" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="825" y1="500" x2="775" y2="500" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="425" y1="500" x2="375" y2="500" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="30" y="650" width="1140" height="80" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="600" y="699" font-size="25" style="fill:#172554" font-weight="bold" text-anchor="middle">PD是另一种部署架构：执行中还多一次P到D的必需KV交接。</text>
+</svg>

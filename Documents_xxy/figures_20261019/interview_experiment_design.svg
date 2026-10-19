@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+<title id="title">实验怎样对照：先固定条件，再比较策略</title><desc id="desc">两个分支使用同模型同硬件同输入输出与执行模式，先过正确性，再交错A/B，最后看性能和机制计数。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;fill:#172554} .muted{fill:#475569}</style>
+<rect width="1200" height="700" fill="white"/>
+<text x="35" y="48" font-size="29" style="fill:#172554" font-weight="bold" text-anchor="start">问题：数字变好了，究竟是策略有效，还是条件变了？</text>
+<rect x="170" y="90" width="860" height="83" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="600" y="140" font-size="24" style="fill:#172554" font-weight="bold" text-anchor="middle">先固定：模型、GPU、KV池、并发、数据、输出预算与执行模式</text>
+<line x1="365" y1="180" x2="300" y2="224" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="835" y1="180" x2="900" y2="224" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="45" y="240" width="510" height="105" rx="14" fill="#dbeafe" stroke="#cbd5e1"/>
+<text x="300" y="285" font-size="28" style="fill:#172554" font-weight="bold" text-anchor="middle">A：原策略</text>
+<text x="300" y="321" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">例如默认CPU保存</text>
+<rect x="645" y="240" width="510" height="105" rx="14" fill="#dcfce7" stroke="#cbd5e1"/>
+<text x="900" y="285" font-size="28" style="fill:#172554" font-weight="bold" text-anchor="middle">B：改后策略</text>
+<text x="900" y="321" font-size="23" style="fill:#172554" font-weight="normal" text-anchor="middle">例如条件化CPU保存</text>
+<line x1="300" y1="352" x2="430" y2="397" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="900" y1="352" x2="770" y2="397" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="170" y="410" width="860" height="85" rx="14" fill="#ccfbf1" stroke="#cbd5e1"/>
+<text x="600" y="460" font-size="27" style="fill:#172554" font-weight="bold" text-anchor="middle">先过正确性门禁，再交错跑多轮A/B</text>
+<line x1="600" y1="503" x2="600" y2="539" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="80" y="551" width="1040" height="105" rx="14" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="600" y="592" font-size="26" style="fill:#172554" font-weight="bold" text-anchor="middle">看两种证据：端到端是否更好 + 机制是否符合预期</text>
+<text x="600" y="631" font-size="23" style="fill:#475569" font-weight="normal" text-anchor="middle">例如：吞吐/尾延迟，以及实际读写、命中、恢复重算</text>
+</svg>
