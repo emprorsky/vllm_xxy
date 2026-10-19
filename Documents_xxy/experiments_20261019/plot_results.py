@@ -230,12 +230,16 @@ def main():
         ),
         (
             "disk_confirm",
-            ["V3_DISK_none", "V3_DISK_conditioned"],
-            "Buffered file KV: persistent tier 1GiB, CPU staging 0.125GiB",
+            ["FINAL_DISK_none", "FINAL_DISK_conditioned"],
+            "Buffered file KV: persistent tier 1GiB, CPU staging 0.25GiB",
         ),
         (
             "pd_layout_screen",
-            [n for n in aggregate if n.startswith("SCREEN_PDLAYOUT_")],
+            [
+                n
+                for n in aggregate
+                if n.startswith(("SCREEN_PDLAYOUT_", "FIX_PDLAYOUT_"))
+            ],
             "Existing layouts: PD vs full replicas, transfer/attention control",
         ),
         (

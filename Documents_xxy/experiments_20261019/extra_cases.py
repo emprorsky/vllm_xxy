@@ -74,7 +74,24 @@ def mixed_trace():
 
 def configurations(stage):
     result = []
-    if stage == "disk_final":
+    if stage == "kvint8_aligned":
+        for mode in ["none", "conditioned"]:
+            config = configuration("public_coding", [0])
+            offload(config, mode, 0.5)
+            for flag, value in [
+                ("--block-size", "256"),
+                ("--num-gpu-blocks-override", "32"),
+            ]:
+                at = config["server_args"].index(flag)
+                config["server_args"][at + 1] = value
+            config["server_args"] += ["--kv-cache-dtype", "int8_per_token_head"]
+            config["required_checks"] = [
+                str(ROOT / "checks/transfer_roundtrip_quant.manifest.json"),
+                str(ROOT / "checks/cpu_prefix_fidelity_int8_aligned256/manifest.json"),
+            ]
+            config["scope"] = "INT8_GPU_CPU_granularity256_KV8192_CPU0p5_seq2"
+            result.append((f"KVINT8A_{mode}", config))
+    elif stage == "disk_final":
         for name, config in configurations("disk"):
             config["required_checks"] += [
                 str(ROOT / "checks/disk_prefix_fidelity_boundary/manifest.json")
@@ -624,6 +641,7 @@ def main():
             "architecture_final",
             "pd_cpu2",
             "disk_final",
+            "kvint8_aligned",
         ],
         required=True,
     )
