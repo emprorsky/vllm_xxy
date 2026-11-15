@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import pytest
+
 from vllm.lora.utils import is_in_target_modules
 
 
@@ -49,3 +51,33 @@ class TestIsInTargetModules:
             ["q_a_proj", "kv_a_proj_with_mqa"],
             {"fused_qkv_a_proj": ["q_a_proj", "kv_a_proj_with_mqa"]},
         )
+
+
+@pytest.mark.cpu_test
+@pytest.mark.skip_global_cleanup
+def test_lfm3_vl_lora_uses_language_backbone_projection_names():
+    from vllm.lora.utils import parse_fine_tuned_lora_name
+    from vllm.model_executor.models.interfaces import supports_lora
+    from vllm.model_executor.models.lfm3_vl import Lfm3VlForConditionalGeneration
+
+    cls = Lfm3VlForConditionalGeneration
+    assert supports_lora(cls)
+    mapper = cls.hf_to_vllm_mapper.get_rename_mapper()
+    for projection in ("in_proj", "out_proj"):
+        actual, lora_a = parse_fine_tuned_lora_name(
+            "base_model.model.model.language_model.layers.0"
+            f".conv.{projection}.lora_A.weight",
+            mapper,
+        )
+        assert actual == f"language_model.model.layers.0.short_conv.{projection}"
+        assert lora_a
+
+    actual, _ = parse_fine_tuned_lora_name(
+        "base_model.model.model.language_model.layers.2.self_attn.q_proj.lora_B.weight",
+        mapper,
+    )
+    assert actual == "language_model.model.layers.2.self_attn.q_proj"
+    assert "q_proj" in cls.packed_modules_mapping["qkv_proj"]
+    assert cls.hf_to_vllm_mapper.apply_list(
+        ["model.vision_tower.layers.0.conv.in_proj.weight"]
+    ) == ["vision_tower.layers.0.conv.in_proj.weight"]

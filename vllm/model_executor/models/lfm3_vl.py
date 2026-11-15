@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only LFM3-VL model: images and videos in, text out."""
 
+import re
 from collections.abc import Iterable, Mapping
 
 import numpy as np
@@ -28,6 +29,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
+from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.configs.lfm3_vl import Lfm3VlConfig, Lfm3VlVisionConfig
@@ -38,10 +40,16 @@ from .interfaces import (
     HasInnerState,
     IsHybrid,
     MultiModalEmbeddings,
+    SupportsLoRA,
     SupportsMultiModal,
     SupportsPP,
 )
-from .lfm3 import Lfm3MLP, _short_conv_state_dtype, _short_conv_state_shape
+from .lfm3 import (
+    Lfm3ForCausalLM,
+    Lfm3MLP,
+    _short_conv_state_dtype,
+    _short_conv_state_shape,
+)
 from .qwen3_vl import (
     Qwen3VLDummyInputsBuilder,
     Qwen3VLMultiModalProcessor,
@@ -451,15 +459,23 @@ class Lfm3VlDummyInputsBuilder(Qwen3VLDummyInputsBuilder):
     dummy_inputs=Lfm3VlDummyInputsBuilder,
 )
 class Lfm3VlForConditionalGeneration(
-    nn.Module, HasInnerState, IsHybrid, SupportsMultiModal, SupportsPP
+    nn.Module, HasInnerState, IsHybrid, SupportsLoRA, SupportsMultiModal, SupportsPP
 ):
+    packed_modules_mapping = Lfm3ForCausalLM.packed_modules_mapping
+    embedding_modules = Lfm3ForCausalLM.embedding_modules
+
     hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_regex={
+            re.compile(
+                r"^(model\.language_model\.layers\.\d+)\.conv\.(?=(?:in|out)_proj\.)"
+            ): r"\g<1>.short_conv.",
+        },
         orig_to_new_prefix={
             "model.language_model.": "language_model.model.",
             "model.vision_tower.": "vision_tower.",
             "model.multi_modal_projector.": "multi_modal_projector.",
             "lm_head.": "language_model.lm_head.",
-        }
+        },
     )
 
     @classmethod
@@ -512,6 +528,13 @@ class Lfm3VlForConditionalGeneration(
             )
         self.make_empty_intermediate_tensors = (
             self.language_model.make_empty_intermediate_tensors
+        )
+
+    def get_mm_mapping(self) -> MultiModelKeys:
+        return MultiModelKeys.from_string_field(
+            language_model="language_model",
+            connector="multi_modal_projector",
+            tower_model="vision_tower",
         )
 
     def embed_multimodal(self, **kwargs: object) -> MultiModalEmbeddings:
