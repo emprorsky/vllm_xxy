@@ -110,7 +110,7 @@ def test_triton_unified_attn_diffkv_vs_reference(
             head_size=head_size_qk, head_size_v=head_size_v
         )
         if not is_flash_attn_varlen_func_available() or fa_version not in (3, 4):
-            pytest.skip(f"FA DiffKV needs FA3/FA4 (got version {fa_version}).")
+            use_torch_ref = True
 
     torch.set_default_device(DEVICE_TYPE)
     set_random_seed(0)
@@ -353,3 +353,31 @@ def test_spec_verify_block_m_grouping_and_launch_kwargs() -> None:
     assert "num_warps" not in decode_kwargs
     assert "num_stages" not in decode_kwargs
     assert decode_reduce
+
+
+@pytest.mark.parametrize(
+    "seq_lens",
+    [
+        [(191, 513)],
+        [(192, 513)],
+        [(193, 513)],
+        [(257, 1025)],
+        [(1, 37), (193, 1025), (31, 255)],
+        [(2, 37), (2, 513)],
+    ],
+)
+@pytest.mark.parametrize("kv_dtype", [None, current_platform.fp8_dtype()])
+@torch.inference_mode()
+def test_diffkv_sm89_prefill_boundary_reference(seq_lens, kv_dtype):
+    """Check all output elements around the SM89 tile and mixed-batch boundary."""
+    test_triton_unified_attn_diffkv_vs_reference(
+        seq_lens=seq_lens,
+        num_heads=(32, 2),
+        head_sizes=(192, 128),
+        sliding_window=None,
+        soft_cap=None,
+        dtype=torch.bfloat16,
+        kv_cache_dtype=kv_dtype,
+        block_size=16,
+        seq_threshold_3D=8,
+    )

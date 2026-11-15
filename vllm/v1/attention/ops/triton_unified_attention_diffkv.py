@@ -28,6 +28,7 @@ import torch
 
 import vllm.envs as envs
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.v1.attention.ops.triton_attention_helpers import (
     apply_alibi_to_score,
@@ -489,6 +490,27 @@ def unified_attention_diffkv(
             BLOCK_M = spec_bm
             launch_kw["num_warps"] = _SPEC_3D_NUM_WARPS if BLOCK_M >= 128 else 4
             spec_tile = _SPEC_3D_TILE
+    # Two query positions reuse each KV tile on SM89. Smaller prefills
+    # regress on RTX 4090, unlike the measured SM12x crossover.
+    if (
+        not use_3d
+        and not is_batch_invariant
+        and current_platform.is_cuda()
+        and current_platform.is_device_capability(89)
+        and q.dtype == k.dtype == v.dtype == torch.bfloat16
+        and num_query_heads == 32
+        and num_kv_heads == 2
+        and head_size_qk == 192
+        and head_size_v == 128
+        and max_seqlen_q >= 192
+        and sliding_window_val == 0
+        and not use_alibi_slopes
+        and sinks is None
+        and softcap == 0
+    ):
+        BLOCK_M = 32
+        launch_kw.update(num_warps=4, num_stages=2)
+
     BLOCK_Q = BLOCK_M // num_queries_per_kv
 
     total_num_q_blocks = q.shape[0] // BLOCK_Q + num_seqs
