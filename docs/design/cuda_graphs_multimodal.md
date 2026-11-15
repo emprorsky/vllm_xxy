@@ -289,3 +289,21 @@ vllm bench mm-processor \
 
 !!! note
     Find more details about benchmarks on GPUs (A100) for video inference at [#38061](https://github.com/vllm-project/vllm/pull/38061).
+
+
+### LFM3-VL image grids
+
+LFM3-VL includes spatial convolutions whose layout is fixed by the patch grid.
+With encoder graphs enabled, it captures the 16 x 16 patch grid by default.
+Set `encoder_cudagraph_image_grid_shapes` in `CompilationConfig` to the grids
+used by the application, for example `[[16, 16], [12, 16], [8, 24]]`.
+These are patch dimensions, not pixel dimensions. Dimensions must be positive
+multiples of the model's spatial merge size. Each additional grid multiplies
+the number of graphs captured across the configured token budgets.
+
+Homogeneous batches with a captured grid replay the smallest fitting budget.
+Mixed grids, unconfigured grids, precomputed image embeddings, and batches
+that exceed the capture capacity use eager execution. Videos use the existing
+video path. Padding inserts independent frames and never changes the geometry
+of a real frame. In particular, equal patch counts with different heights and
+widths cannot share a captured graph.

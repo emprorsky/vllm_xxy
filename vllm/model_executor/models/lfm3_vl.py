@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Inference-only LFM3-VL model: images and videos in, text out."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -38,6 +39,7 @@ from .interfaces import (
     HasInnerState,
     IsHybrid,
     MultiModalEmbeddings,
+    SupportsEncoderCudaGraph,
     SupportsMultiModal,
     SupportsPP,
 )
@@ -451,7 +453,12 @@ class Lfm3VlDummyInputsBuilder(Qwen3VLDummyInputsBuilder):
     dummy_inputs=Lfm3VlDummyInputsBuilder,
 )
 class Lfm3VlForConditionalGeneration(
-    nn.Module, HasInnerState, IsHybrid, SupportsMultiModal, SupportsPP
+    nn.Module,
+    HasInnerState,
+    IsHybrid,
+    SupportsMultiModal,
+    SupportsPP,
+    SupportsEncoderCudaGraph,
 ):
     hf_to_vllm_mapper = WeightsMapper(
         orig_to_new_prefix={
@@ -492,6 +499,24 @@ class Lfm3VlForConditionalGeneration(
         super().__init__()
         config: Lfm3VlConfig = vllm_config.model_config.hf_config
         self.config = config
+        self.encoder_grid_shapes = tuple(
+            dict.fromkeys(
+                tuple(shape)
+                for shape in (
+                    vllm_config.compilation_config.encoder_cudagraph_image_grid_shapes
+                    or [(16, 16)]
+                )
+            )
+        )
+        merge = config.vision_config.spatial_merge_size
+        if any(
+            h <= 0 or w <= 0 or h % merge or w % merge
+            for h, w in self.encoder_grid_shapes
+        ):
+            raise ValueError(
+                "Encoder grid dimensions must be positive multiples "
+                "of spatial_merge_size"
+            )
         with self._mark_tower_model(vllm_config, {"image", "video"}):
             self.vision_tower = Lfm3VlVisionModel(
                 config.vision_config,
@@ -537,6 +562,135 @@ class Lfm3VlForConditionalGeneration(
                 assert isinstance(grid, torch.Tensor)
                 embeddings += embeds.split((grid.prod(-1) // merge).tolist())
         return embeddings
+
+    def get_encoder_cudagraph_config(self):
+        from vllm.v1.worker.encoder_cudagraph_defs import EncoderCudaGraphConfig
+
+        return EncoderCudaGraphConfig(
+            modalities=["image"],
+            buffer_keys=["pixel_values", "image_grid_thw"],
+            out_hidden_size=self.config.text_config.hidden_size,
+            capture_axes=(self.encoder_grid_shapes,),
+        )
+
+    def get_input_modality(self, mm_kwargs: dict[str, Any]) -> str:
+        return "video" if "video_grid_thw" in mm_kwargs else "image"
+
+    def get_max_frames_per_video(self) -> int:
+        return 0
+
+    def get_encoder_cudagraph_budget_range(self, vllm_config):
+        merge = self.vision_tower.spatial_merge_size**2
+        smallest = min(h * w // merge for h, w in self.encoder_grid_shapes)
+        largest = max(
+            smallest,
+            min(
+                vllm_config.scheduler_config.max_num_batched_tokens,
+                vllm_config.model_config.max_model_len,
+            ),
+        )
+        return smallest, largest
+
+    def get_encoder_cudagraph_item_specs(self, mm_kwargs: dict[str, Any]):
+        from vllm.v1.worker.encoder_cudagraph_defs import EncoderItemSpec
+
+        merge = self.vision_tower.spatial_merge_size**2
+        return [
+            EncoderItemSpec(t * h * w, t * h * w // merge)
+            for t, h, w in mm_kwargs["image_grid_thw"].tolist()
+        ]
+
+    def select_encoder_cudagraph_items(
+        self,
+        mm_kwargs: dict[str, Any],
+        indices: list[int],
+    ) -> dict[str, Any]:
+        from vllm.v1.worker.encoder_cudagraph_defs import (
+            ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG,
+        )
+
+        grid = mm_kwargs["image_grid_thw"]
+        lengths = [t * h * w for t, h, w in grid.tolist()]
+        merge = self.vision_tower.spatial_merge_size**2
+        pixels_key = "pixel_values" if "pixel_values" in mm_kwargs else "image_embeds"
+        sizes = (
+            lengths if pixels_key == "pixel_values" else [n // merge for n in lengths]
+        )
+        parts = mm_kwargs[pixels_key].split(sizes)
+        selected = grid[indices]
+        layouts = {tuple(row) for row in selected.tolist()}
+        axis = None
+        if pixels_key == "pixel_values" and len(layouts) == 1:
+            t, h, w = next(iter(layouts))
+            if t == 1:
+                axis = (h, w)
+        return {
+            pixels_key: torch.cat([parts[i] for i in indices])
+            if indices
+            else mm_kwargs[pixels_key][:0],
+            "image_grid_thw": selected,
+            ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG: (axis,),
+        }
+
+    def prepare_encoder_cudagraph_capture_inputs(
+        self,
+        token_budget: int,
+        max_batch_size: int,
+        max_frames_per_batch: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        path: str = "default",
+        axis_keys: tuple[Hashable, ...] | None = None,
+    ):
+        from vllm.v1.worker.encoder_cudagraph_defs import EncoderCudaGraphCaptureInputs
+
+        assert axis_keys is not None
+        shape = axis_keys[0]
+        assert isinstance(shape, tuple) and len(shape) == 2
+        h, w = shape
+        merge = self.vision_tower.spatial_merge_size**2
+        count = max(1, min(max_batch_size, token_budget // (h * w // merge)))
+        return EncoderCudaGraphCaptureInputs(
+            values={
+                "pixel_values": torch.zeros(
+                    count * h * w,
+                    self.vision_tower.patchifier.input_size,
+                    device=device,
+                    dtype=dtype,
+                ),
+                "image_grid_thw": torch.tensor([[1, h, w]] * count, device="cpu"),
+            }
+        )
+
+    def prepare_encoder_cudagraph_replay_buffers(
+        self,
+        mm_kwargs: dict[str, Any],
+        max_batch_size: int,
+        max_frames_per_batch: int,
+        path: str = "default",
+    ):
+        from vllm.v1.worker.encoder_cudagraph_defs import EncoderCudaGraphReplayBuffers
+
+        return EncoderCudaGraphReplayBuffers(
+            values={
+                "pixel_values": mm_kwargs["pixel_values"],
+                "image_grid_thw": mm_kwargs["image_grid_thw"],
+            }
+        )
+
+    def encoder_cudagraph_forward(
+        self,
+        values: dict[str, torch.Tensor],
+        path: str = "default",
+    ) -> torch.Tensor:
+        return torch.cat(self.embed_multimodal(**values))
+
+    def encoder_eager_forward(
+        self,
+        mm_kwargs: dict[str, Any],
+        path: str = "default",
+    ) -> torch.Tensor:
+        return torch.cat(self.embed_multimodal(**mm_kwargs))
 
     def forward(
         self,

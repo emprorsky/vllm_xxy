@@ -611,6 +611,16 @@ class CompilationConfig:
     When enabled, captures full encoder forward as CUDA graph
     for each token budget level."""
 
+    encoder_cudagraph_image_grid_shapes: list[tuple[int, int]] = field(
+        default_factory=list
+    )
+    """Image patch-grid (height, width) buckets for shape-dependent encoders.
+    LFM3-VL defaults to a 16 x 16 patch grid. Only homogeneous image batches
+    with a configured grid use replay; other grids use eager execution.
+    Sizes are patch counts, not pixels, and must be divisible by the model's
+    spatial merge size. Each grid adds a capture axis, increasing capture cost.
+    Other encoders ignore this option."""
+
     encoder_cudagraph_token_budgets: list[int] = field(default_factory=list)
     """Token budget levels for encoder CUDA graph capture.
     Each budget defines a fixed token capacity. At runtime, a batch replays the

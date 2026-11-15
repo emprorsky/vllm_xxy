@@ -2082,3 +2082,56 @@ def test_step3_vl_postprocess_clones_global_only_item():
     )
     assert torch.equal(dest[0], global_out)
     assert dest[0].data_ptr() != global_out.data_ptr()
+
+
+@pytest.mark.skip_global_cleanup
+@pytest.mark.parametrize(
+    "indices,expected_axis",
+    [
+        ([0], (12, 16)),
+        ([1], (8, 24)),
+        ([1, 0], None),
+        ([], None),
+    ],
+)
+def test_lfm3_encoder_graph_selection_preserves_spatial_layout(indices, expected_axis):
+    """Equal patch counts cannot alias a graph with a different spatial layout."""
+    from vllm.model_executor.models.lfm3_vl import Lfm3VlForConditionalGeneration
+    from vllm.v1.worker.encoder_cudagraph_defs import ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG
+
+    model = Lfm3VlForConditionalGeneration.__new__(Lfm3VlForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.vision_tower = SimpleNamespace(spatial_merge_size=2)
+    pixels = torch.arange(384 * 3).reshape(384, 3)
+    kwargs = {
+        "pixel_values": pixels,
+        "image_grid_thw": torch.tensor([[1, 12, 16], [1, 8, 24]]),
+    }
+    selected = model.select_encoder_cudagraph_items(kwargs, indices)
+    assert selected[ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG] == (expected_axis,)
+    expected = (
+        torch.cat([pixels[i * 192 : (i + 1) * 192] for i in indices])
+        if indices
+        else pixels[:0]
+    )
+    torch.testing.assert_close(selected["pixel_values"], expected, rtol=0, atol=0)
+    specs = model.get_encoder_cudagraph_item_specs(selected)
+    assert [(s.input_size, s.output_tokens) for s in specs] == [(192, 48)] * len(
+        indices
+    )
+
+
+@pytest.mark.skip_global_cleanup
+def test_lfm3_precomputed_embeddings_do_not_select_a_pixel_graph():
+    from vllm.model_executor.models.lfm3_vl import Lfm3VlForConditionalGeneration
+    from vllm.v1.worker.encoder_cudagraph_defs import ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG
+
+    model = Lfm3VlForConditionalGeneration.__new__(Lfm3VlForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.vision_tower = SimpleNamespace(spatial_merge_size=2)
+    embeddings = torch.randn(48, 8)
+    selected = model.select_encoder_cudagraph_items(
+        {"image_embeds": embeddings, "image_grid_thw": torch.tensor([[1, 12, 16]])}, [0]
+    )
+    assert selected[ENCODER_CUDAGRAPH_AXIS_KEYS_KWARG] == (None,)
+    torch.testing.assert_close(selected["image_embeds"], embeddings)
