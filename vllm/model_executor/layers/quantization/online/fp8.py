@@ -693,9 +693,33 @@ class _Fp8OnlineMoEBase(OnlineMoEMethodBase):
         )
 
 
+def _moe_fp8_quantization_device(weight: torch.Tensor) -> torch.device:
+    if weight.device.type == "cpu" and current_platform.is_cuda():
+        return torch.device("cuda", torch.cuda.current_device())
+    return weight.device
+
+
+def _quantize_moe_fp8_per_tensor(
+    weight: torch.Tensor, moe_tp_size: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    device = _moe_fp8_quantization_device(weight)
+    amax = weight_amax(weight.flatten(1), dim=-1).to(device)
+    scale = _fp8_scale(amax_for_moe_weight_quant(amax, moe_tp_size))
+    quantized = torch.empty_like(
+        weight, dtype=current_platform.fp8_dtype(), device=device
+    )
+    for expert, source in enumerate(weight):
+        ops.scaled_fp8_quant(
+            source.to(device), scale=scale[expert], output=quantized[expert]
+        )
+    return quantized, scale
+
+
 class Fp8PerTensorOnlineMoEMethod(_Fp8OnlineMoEBase):
     """Online tensorwise FP8 MoE quantization.
     Loads fp16/bf16 weights and quantizes them per-tensor during loading."""
+
+    supports_cpu_weight_staging = True
 
     def __init__(
         self,
@@ -723,28 +747,12 @@ class Fp8PerTensorOnlineMoEMethod(_Fp8OnlineMoEBase):
 
         w13_weight, w2_weight = self.get_weights_for_quantization(layer)
 
-        # If checkpoint is fp16, quantize in place.
-        fp8_dtype = current_platform.fp8_dtype()
-        w13 = torch.empty_like(w13_weight, dtype=fp8_dtype)
-        w2 = torch.empty_like(w2_weight, dtype=fp8_dtype)
         layer.w13_input_scale = None
         layer.w2_input_scale = None
 
         moe_tp_size = self.moe.tp_size
-        w13_amax = weight_amax(w13_weight.flatten(1), dim=-1)
-        w13_amax = amax_for_moe_weight_quant(w13_amax, moe_tp_size)
-        w13_scale = _fp8_scale(w13_amax)
-        w2_amax = weight_amax(w2_weight.flatten(1), dim=-1)
-        w2_amax = amax_for_moe_weight_quant(w2_amax, moe_tp_size)
-        w2_scale = _fp8_scale(w2_amax)
-
-        for expert in range(layer.local_num_experts):
-            w13[expert, :, :], _ = ops.scaled_fp8_quant(
-                w13_weight[expert, :, :], scale=w13_scale[expert]
-            )
-            w2[expert, :, :], _ = ops.scaled_fp8_quant(
-                w2_weight[expert, :, :], scale=w2_scale[expert]
-            )
+        w13, w13_scale = _quantize_moe_fp8_per_tensor(w13_weight, moe_tp_size)
+        w2, w2_scale = _quantize_moe_fp8_per_tensor(w2_weight, moe_tp_size)
 
         # Shuffle weights to runtime format and setup kernel.
         self._setup_kernel(
@@ -765,6 +773,8 @@ class Fp8PerTensorOnlineMoEMethod(_Fp8OnlineMoEBase):
 class Fp8PerBlockOnlineMoEMethod(_Fp8OnlineMoEBase):
     """Online blockwise FP8 MoE quantization.
     Loads fp16/bf16 weights and quantizes them per-block during loading."""
+
+    supports_cpu_weight_staging = True
 
     def __init__(
         self,
@@ -803,9 +813,10 @@ class Fp8PerBlockOnlineMoEMethod(_Fp8OnlineMoEBase):
         w13_weight, w2_weight = self.get_weights_for_quantization(layer)
         self._zero_padding(layer, w13_weight, w2_weight)
 
+        device = _moe_fp8_quantization_device(w13_weight)
         fp8_dtype = current_platform.fp8_dtype()
-        w13 = torch.empty_like(w13_weight, dtype=fp8_dtype)
-        w2 = torch.empty_like(w2_weight, dtype=fp8_dtype)
+        w13 = torch.empty_like(w13_weight, dtype=fp8_dtype, device=device)
+        w2 = torch.empty_like(w2_weight, dtype=fp8_dtype, device=device)
 
         block_size = self.weight_block_size
         assert block_size is not None
@@ -834,12 +845,12 @@ class Fp8PerBlockOnlineMoEMethod(_Fp8OnlineMoEBase):
 
         for expert in range(num_experts):
             w13[expert], w13_scale[expert] = per_block_cast_to_fp8(
-                w13_weight[expert],
+                w13_weight[expert].to(device),
                 block_size=block_size,
                 use_ue8m0=False,
             )
             w2[expert], w2_scale[expert] = per_block_cast_to_fp8(
-                w2_weight[expert],
+                w2_weight[expert].to(device),
                 block_size=block_size,
                 use_ue8m0=False,
             )

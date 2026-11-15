@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 
 import torch
 
+import vllm.envs as envs
 from vllm.model_executor.layers.fused_moe import (
     FusedMoEMethodBase,
     RoutedExperts,
@@ -21,6 +22,7 @@ from vllm.model_executor.model_loader.reload.layerwise import (
     initialize_online_processing,
 )
 from vllm.model_executor.utils import set_weight_attrs
+from vllm.platforms import current_platform
 
 
 class OnlineMoEMethodBase(OnlineRequantizationMixin, FusedMoEMethodBase):
@@ -29,9 +31,28 @@ class OnlineMoEMethodBase(OnlineRequantizationMixin, FusedMoEMethodBase):
     """
 
     uses_meta_device: bool = True
+    supports_cpu_weight_staging: bool = False
 
     def __init__(self, moe: FusedMoEConfig):
         super().__init__(moe)
+
+    def initial_weight_loading_device(
+        self, layer: RoutedExperts, target_device: torch.device
+    ) -> torch.device:
+        """Choose where to assemble full-precision weights for the first load."""
+        if (
+            envs.VLLM_ONLINE_MOE_CPU_STAGING
+            and self.supports_cpu_weight_staging
+            and target_device.type == "cuda"
+            and current_platform.is_cuda()
+            and self.moe.tp_size == 1
+            and self.moe.ep_size == 1
+            and not self.moe.has_bias
+            and self.requantization_source is None
+            and not layer.expert_map_manager.num_fused_shared_experts
+        ):
+            return torch.device("cpu")
+        return target_device
 
     def create_weights(
         self,

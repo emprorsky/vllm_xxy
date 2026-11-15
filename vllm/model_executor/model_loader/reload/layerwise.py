@@ -8,6 +8,7 @@ from weakref import WeakKeyDictionary, WeakSet
 
 import torch
 
+import vllm.envs as envs
 from vllm.config import ModelConfig
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention import is_deferred_attention_layer
@@ -373,8 +374,16 @@ def _layerwise_process(layer: torch.nn.Module, info: LayerReloadingInfo):
     3. Runs quantization processing if applicable
     4. Copies processed values back to original tensor storage
     """
-    # Materialize layer tensors onto device
-    materialize_layer(layer, info)
+    device = info.restore_device
+    if info.kernel_tensors is None and envs.VLLM_ONLINE_MOE_CPU_STAGING:
+        from vllm.model_executor.layers.quantization.online.moe_base import (
+            OnlineMoEMethodBase,
+        )
+
+        quant_method = getattr(layer, "quant_method", None)
+        if isinstance(quant_method, OnlineMoEMethodBase):
+            device = quant_method.initial_weight_loading_device(layer, device)
+    materialize_layer(layer, info, device=device)
 
     # Unwrap layerwise loading wrappers
     for param in get_layer_tensors(layer).values():

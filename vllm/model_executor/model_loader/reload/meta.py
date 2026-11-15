@@ -143,12 +143,17 @@ def restore_layer_on_meta(layer: torch.nn.Module, info: LayerReloadingInfo):
             layer.register_buffer(name, buffer, persistent=name not in non_persistent)
 
 
-def materialize_layer(layer: torch.nn.Module, info: LayerReloadingInfo):
+def materialize_layer(
+    layer: torch.nn.Module,
+    info: LayerReloadingInfo,
+    *,
+    device: torch.device | None = None,
+):
     """Materialize all meta tensors in a layer to actual tensors."""
     if layer.__class__.__name__ in SKIP_MODULES:
         return
 
-    with info.restore_device:
+    with info.restore_device if device is None else device:
         for name, tensor in get_layer_tensors(layer).items():
             if name not in SKIP_TENSORS and tensor.is_meta:
                 setattr(layer, name, materialize_meta_tensor(tensor))

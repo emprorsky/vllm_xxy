@@ -109,6 +109,7 @@ from vllm.model_executor.layers.quantization.online.fp8 import (
     _is_tp_sharded,
 )
 from vllm.model_executor.layers.quantization.online.int8 import Int8OnlineMoEMethod
+from vllm.model_executor.layers.quantization.online.moe_base import OnlineMoEMethodBase
 from vllm.model_executor.layers.quantization.online.mxfp4 import (
     Mxfp4OnlineLinearMethod,
     Mxfp4OnlineMoEMethod,
@@ -215,6 +216,68 @@ class _TestRoutedExperts(RoutedExperts):
         self.moe_config = make_dummy_moe_config(
             num_experts=8, experts_per_token=2, hidden_dim=256, intermediate_size=256
         )
+
+
+@pytest.mark.skipif(not current_platform.is_cuda(), reason="CUDA staging path")
+@pytest.mark.parametrize(
+    ("method_cls", "block_size"),
+    [(Fp8PerTensorOnlineMoEMethod, None), (Fp8PerBlockOnlineMoEMethod, [128, 128])],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_fp8_moe_cpu_staging_matches_device_loading(
+    monkeypatch, method_cls, block_size, dtype
+):
+    """The loader stages source experts on CPU and preserves CUDA quantization."""
+    import vllm.envs as envs
+    from tests.kernels.moe.utils import make_dummy_moe_config
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    config = make_dummy_moe_config(
+        num_experts=3, hidden_dim=128, intermediate_size=128, in_dtype=dtype
+    )
+    generator = torch.Generator(device="cpu").manual_seed(67290)
+    w13 = torch.randn((3, 256, 128), dtype=dtype, device="cpu", generator=generator)
+    w2 = torch.randn((3, 128, 128), dtype=dtype, device="cpu", generator=generator)
+
+    snapshots = []
+    for stage in (False, True):
+        monkeypatch.setattr(envs, "VLLM_ONLINE_MOE_CPU_STAGING", stage)
+        layer = torch.nn.Module()
+        layer.quant_config = SimpleNamespace(online_quantization_config=None)
+        layer.moe_config = config
+        layer.expert_map_manager = SimpleNamespace(num_fused_shared_experts=0)
+        layer.local_num_experts = 3
+        method = method_cls.__new__(method_cls)
+        OnlineMoEMethodBase.__init__(method, config)
+        method.weight_block_size = block_size
+        layer.quant_method = method
+
+        def capture(
+            layer, quant_w13, quant_w2, scale_w13, scale_w2, *, staged=stage, **kwargs
+        ):
+            expected_source = "cpu" if staged else "cuda"
+            assert layer.w13_weight.device.type == expected_source
+            assert layer.w2_weight.device.type == expected_source
+            assert quant_w13.device == quant_w2.device == device
+            assert scale_w13.device == scale_w2.device == device
+            snapshots.append(
+                (
+                    quant_w13.view(torch.uint8).cpu(),
+                    quant_w2.view(torch.uint8).cpu(),
+                    scale_w13.cpu(),
+                    scale_w2.cpu(),
+                )
+            )
+
+        monkeypatch.setattr(method, "_setup_kernel", capture)
+        with device:
+            method.create_weights(layer, 3, 128, 128, dtype)
+        layer.w13_weight.weight_loader(layer.w13_weight, w13)
+        layer.w2_weight.weight_loader(layer.w2_weight, w2)
+
+    baseline, staged = snapshots
+    for expected, actual in zip(baseline, staged, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
@@ -3512,3 +3575,49 @@ def test_registered_online_config_is_instantiated(
 
     assert type(result) is _OotOnlineConfig
     assert result.args is not None
+
+
+@pytest.mark.skip_global_cleanup
+@pytest.mark.parametrize(
+    "restriction",
+    [
+        None,
+        "disabled",
+        "unsupported",
+        "cpu",
+        "rocm",
+        "tp",
+        "ep",
+        "bias",
+        "requantization",
+        "shared_experts",
+    ],
+)
+def test_fp8_moe_cpu_staging_keeps_unsupported_paths_on_target(
+    monkeypatch, restriction
+):
+    """Only a supported first CUDA load may materialize weights on the CPU."""
+    import vllm.envs as envs
+    from vllm.model_executor.layers.quantization.online.moe_base import (
+        OnlineMoEMethodBase,
+    )
+
+    method = SimpleNamespace(
+        supports_cpu_weight_staging=restriction != "unsupported",
+        moe=SimpleNamespace(
+            tp_size=2 if restriction == "tp" else 1,
+            ep_size=2 if restriction == "ep" else 1,
+            has_bias=restriction == "bias",
+        ),
+        requantization_source=object() if restriction == "requantization" else None,
+    )
+    layer = SimpleNamespace(
+        expert_map_manager=SimpleNamespace(
+            num_fused_shared_experts=int(restriction == "shared_experts")
+        )
+    )
+    target = torch.device("cpu" if restriction == "cpu" else "cuda")
+    monkeypatch.setattr(envs, "VLLM_ONLINE_MOE_CPU_STAGING", restriction != "disabled")
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: restriction != "rocm")
+    result = OnlineMoEMethodBase.initial_weight_loading_device(method, layer, target)
+    assert result == (torch.device("cpu") if restriction is None else target)

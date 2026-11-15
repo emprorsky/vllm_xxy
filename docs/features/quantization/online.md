@@ -47,6 +47,17 @@ vllm serve Qwen/Qwen3.5-35B-A3B --quantization mxfp4 \
 vllm serve Qwen/Qwen3.6-35B-A3B --quantization lut_b_moe
 ```
 
+## Reduce GPU memory during FP8 MoE loading
+
+Set `VLLM_ONLINE_MOE_CPU_STAGING=1` to assemble full-precision routed-expert
+weights on the CPU during initial loading. vLLM moves one expert matrix at a
+time to the GPU for quantization and keeps the resulting FP8 layer on the GPU.
+
+This opt-in currently applies to CUDA `fp8_per_tensor` and `fp8_per_block`
+with unsharded experts (TP=1, EP=1). It uses more host memory and may increase
+loading time. The loader uses its regular path for weight updates, expert
+biases, fused shared experts, and checkpoints that require requantization.
+
 ## Supported Schemes
 
 | Scheme | Weight recipe | Activation recipe | Notes |
